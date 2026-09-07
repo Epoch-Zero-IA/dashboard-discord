@@ -1,0 +1,95 @@
+{
+  "components": {
+    "schemas": {
+      "Greeting": {
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "Greeting",
+        "type": "object"
+      },
+      "HealthCheck": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "title": "HealthCheck",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "APIKey": {
+        "description": "Injected server-side by nginx for the frontend; supplied directly by third-party clients.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "title": "Dashboard Discord API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/health": {
+      "get": {
+        "deprecated": false,
+        "operationId": "ApiHealthHealthCheck",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthCheck"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "HealthCheck"
+      }
+    },
+    "/api/hello": {
+      "get": {
+        "deprecated": false,
+        "operationId": "ApiHelloHello",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Greeting"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "APIKey": []
+          }
+        ],
+        "summary": "Hello"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}

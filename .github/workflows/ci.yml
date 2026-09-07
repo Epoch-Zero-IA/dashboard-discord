@@ -1,0 +1,86 @@
+name: CI
+
+# Gitflow: validate every PR into and every push to the long-lived branches.
+# Feature/release/hotfix branches are covered via their PRs.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+# Cancel superseded runs on the same ref (e.g. a new push to a PR branch).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Litestar CLI (assets install / generate-types) must load the app to expose
+  # the Vite plugin commands; normally set via .env, which is absent in CI.
+  LITESTAR_APP: backend.app:app
+  PYTHONPATH: .
+
+jobs:
+  check:
+    name: Lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install dependencies (backend + frontend)
+        run: just install
+
+      # `just check` starts with check-types, which regenerates openapi.json and
+      # fails on any diff: the contract must be committed alongside the handlers.
+      - name: Contract check + lint + test
+        run: just check
+
+  deploy:
+    name: Deploy
+    # The whole point of going through Actions rather than Coolify's own auto-deploy:
+    # that one fires on the push itself, so a commit failing the contract check, the
+    # lint or the tests would reach production. Here nothing ships without a green run.
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Recorded as a deployment in GitHub, and the place to add a manual approval later
+    # without touching this file.
+    environment: production
+    # Never two deployments at once, and never cancel one already under way.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Trigger the Coolify deployment
+        env:
+          # Per-resource webhook URL: it already carries the resource uuid, so there
+          # is one less secret to manage than with the generic /api/v1/deploy call.
+          COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_DEPLOY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          : "${COOLIFY_DEPLOY_WEBHOOK:?missing repository secret COOLIFY_DEPLOY_WEBHOOK}"
+          : "${COOLIFY_TOKEN:?missing repository secret COOLIFY_TOKEN}"
+          # --fail-with-body: a rejected call must fail the job and print the reason,
+          # instead of reporting success on a 401 nobody reads.
+          curl --fail-with-body --silent --show-error \
+            --request GET "$COOLIFY_DEPLOY_WEBHOOK" \
+            --header "Authorization: Bearer $COOLIFY_TOKEN"

@@ -1,0 +1,57 @@
+[project]
+name = "dashboard-discord"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "jinja2>=3.1.6",
+    "litestar>=2.24.0",
+    "litestar-vite>=0.31.0",
+    "markupsafe>=3.0.3",
+    "python-dotenv>=1.2.3",
+    "litestar-granian>=0.16.0",
+    "structlog>=26.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "commitizen>=4.18.0",
+    "prek>=0.5.1",
+    "pyrefly>=1.2.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.16.5",
+]
+
+[tool.pytest.ini_options]
+# Register the `anyio` marker, else pytest warns `Unknown pytest.mark.anyio`
+markers = ["anyio"]
+
+# Add repo root to sys.path, else `pytest` fails with `ModuleNotFoundError: No module named 'backend'`
+pythonpath = ["."]
+
+# Measure coverage of the `backend` package on every run; `term-missing` prints the
+# uncovered line numbers so gaps are visible without opening an HTML report.
+addopts = ["--cov=backend", "--cov-report=term-missing"]
+
+# Silence third-party noise: rich_click 1.9.8 (pulled in by litestar) uses click APIs
+# deprecated in click 9.0. Not our code and nothing to bump, so ignore it.
+filterwarnings = [
+    "ignore::DeprecationWarning:rich_click",
+]
+
+[tool.coverage.run]
+source = ["backend"]
+
+[tool.coverage.report]
+# TYPE_CHECKING blocks and the `if __name__ == "__main__"` guard never run under tests.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+# Without this section pyrefly falls back to the `basic` preset, covers no project
+# file and reports "0 errors" having checked nothing. Listing the sources is what
+# makes the type-checking half of `just lint` worth anything. `pyrefly dump-config`
+# prints the files actually covered.
+[tool.pyrefly]
+project-includes = ["backend", "tests"]

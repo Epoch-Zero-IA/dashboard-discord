@@ -1,0 +1,64 @@
+# Hooks run via `uv run` so versions track pyproject.toml (no rev pin drift).
+# Runner: prek (Rust reimplementation of pre-commit). Install hooks: `prek install`.
+# Two hook types are wired below (pre-commit + commit-msg), so a single
+# `prek install` sets up both — no need to pass `-t commit-msg` by hand.
+default_install_hook_types: [pre-commit, commit-msg]
+repos:
+  - repo: local
+    hooks:
+      # 1. Format first so the check passes see already-formatted code.
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # 2. Autofix + report — applies safe fixes, then fails on anything left unfixed.
+      #    A modified file already fails the run, so a separate report pass adds nothing.
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # 3. Type check — whole project, filenames not passed.
+      - id: pyrefly
+        name: pyrefly check
+        entry: uv run pyrefly check
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # 4. Commit message — enforce Conventional Commits (rules live in cz.toml).
+      #    Runs on the commit-msg stage; prek passes the message file as the last arg,
+      #    which `--commit-msg-file` consumes. `--allow-abort` keeps empty/aborted
+      #    commits (e.g. `git commit` with no message) from being flagged.
+      - id: commitizen
+        name: commitizen check
+        entry: uv run cz check --allow-abort --commit-msg-file
+        language: system
+        stages: [commit-msg]
+
+      # 5. Frontend lint + format check (eslint + prettier). Runs the whole frontend
+      #    (not per-file) since it executes from frontend/ with its own config; the
+      #    `files` filter only decides when to trigger. Non-writing — on failure run
+      #    `just format`. svelte-check stays in `just lint`/CI (too slow for a commit).
+      - id: frontend-lint
+        name: eslint + prettier (frontend)
+        entry: pnpm -C frontend run lint
+        language: system
+        files: ^frontend/.*\.(ts|js|mjs|svelte|css|html|json)$
+        pass_filenames: false
+
+  # Generic hygiene checks. No uv/Python equivalent, so pinned from upstream —
+  # the only rev pin in this file; bump deliberately.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files

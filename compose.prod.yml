@@ -1,0 +1,58 @@
+# Production stack for Coolify. Differs from compose.yml on three points, all of them
+# consequences of running behind Coolify's Traefik rather than on a laptop:
+#
+#   - No `ports:`. Publishing a port bypasses the proxy entirely and would expose the
+#     container straight to the host. Traefik reaches `web` over the project network,
+#     so nothing needs publishing.
+#   - SERVICE_FQDN_WEB_8080 asks Coolify to generate a domain, attach it to this
+#     service and route it to port 8080 (nginx runs unprivileged, hence not 80).
+#   - `restart: unless-stopped`, so a crashed container comes back on its own.
+#
+# `api` gets no domain and no published port: Coolify keeps such services private to
+# the project network, reachable only as `http://api:8000` — which is exactly what
+# nginx does. Give it a domain only if you decide to open the API to third parties,
+# and read the API key section of the README first.
+#
+# Coolify treats this file as the source of truth: declare things here, not in the UI.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    environment:
+      # Magic variable, intentionally valueless: Coolify fills it in.
+      - SERVICE_FQDN_WEB_8080
+      # `:?` makes it a required variable in the UI — a blank value blocks the
+      # deployment instead of shipping an API with an empty key to compare against.
+      - API_KEY=${API_KEY:?}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      # Vertical scaling knob: one Granian worker per core is a sane start.
+      - WEB_CONCURRENCY=${WEB_CONCURRENCY:-1}
+      # Docs off by default here: /schema publishes a full route inventory, and the
+      # API has its own public domain on Coolify, so nginx cannot hide them. Set
+      # ENABLE_DOCS=true in the project variables to turn them back on temporarily.
+      - ENABLE_DOCS=${ENABLE_DOCS:-false}
+      - API_KEY=${API_KEY:?}
+    healthcheck:
+      # No curl in the image; the venv's python is on PATH. /api/health is public on
+      # purpose, since this check bypasses nginx and therefore carries no key.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/health")
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped

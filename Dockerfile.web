@@ -1,0 +1,26 @@
+# Frontend image: Vite bundle served by nginx. No Python — the TypeScript types are
+# derived from openapi.json, versioned at the repo root.
+FROM node:22-slim AS builder
+
+WORKDIR /app
+# Manifest and lockfile alone first, to keep the install cached.
+COPY frontend/package.json frontend/pnpm-lock.yaml ./frontend/
+RUN corepack enable && pnpm -C frontend install --frozen-lockfile
+
+COPY openapi.json ./openapi.json
+COPY frontend ./frontend
+RUN pnpm -C frontend generate-types && pnpm -C frontend build
+
+# Unprivileged nginx image: runs as the `nginx` user and listens on 8080.
+FROM nginxinc/nginx-unprivileged:1.29-alpine AS runtime
+
+# Templates are rendered by the entrypoint at startup; the filter keeps envsubst away
+# from nginx's own variables, so only ${API_KEY} is replaced.
+ENV NGINX_ENVSUBST_FILTER="^API_KEY$"
+COPY deploy/default.conf.template /etc/nginx/templates/default.conf.template
+# Outside templates/ on purpose: it holds no variable to substitute, and the server
+# config includes it by absolute path.
+COPY deploy/security-headers.conf /etc/nginx/security-headers.conf
+COPY --from=builder /app/frontend/dist /usr/share/nginx/html
+
+EXPOSE 8080

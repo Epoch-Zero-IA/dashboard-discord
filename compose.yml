@@ -1,0 +1,38 @@
+services:
+  # The public entrypoint: serves the bundle and proxies /api to the API.
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    # Injected into /api/ requests server-side, so the browser never sees it.
+    # `:?` on purpose: a missing key must stop the deployment, not ship an open API.
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY in .env (see .env.example)}
+    ports:
+      - "8000:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      # Vertical scaling: one Granian worker per core is a sane starting point.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      # The same key the guard on /api/hello checks against.
+      API_KEY: ${API_KEY:?set API_KEY in .env (see .env.example)}
+    # No `ports`: the API is reachable only by web, over the compose network.
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/health")
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s

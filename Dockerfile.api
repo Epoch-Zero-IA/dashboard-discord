@@ -1,0 +1,35 @@
+# API image: Python only, no Node and no build tooling. The frontend has its own image
+# (Dockerfile.web) and the two deploy and scale independently. The API contract
+# (openapi.json) is versioned, so neither image needs the other to build.
+FROM debian:bookworm-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# The managed CPython lands in /python so the final stage can copy it.
+ENV UV_PYTHON_INSTALL_DIR=/python UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_COMPILE_BYTECODE=1 UV_PYTHON=3.14
+
+WORKDIR /app
+# Dependencies alone first: application code changes far more often than they do,
+# so this layer stays cached.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+FROM debian:bookworm-slim AS runtime
+
+RUN useradd -m -u 10001 app
+
+COPY --from=builder --chown=app:app /python /python
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --chown=app:app backend /app/backend
+
+ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONUNBUFFERED=1 \
+    LITESTAR_APP=backend.app:app
+
+USER app
+WORKDIR /app
+EXPOSE 8000
+
+# GranianPlugin backs `litestar run`. Worker count comes from WEB_CONCURRENCY, read
+# natively by the Granian CLI: that is the vertical scaling knob.
+CMD ["litestar", "run", "--host", "0.0.0.0", "--port", "8000"]

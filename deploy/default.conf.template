@@ -1,0 +1,97 @@
+# Single origin: nginx serves the Svelte bundle and proxies /api to Litestar. The
+# browser only ever sees one host, so no CORS and no API URL baked into the bundle.
+# Frontend and API remain two containers, sized independently.
+#
+# A template, not a plain conf: the nginx entrypoint runs envsubst over
+# /etc/nginx/templates at startup to inject ${API_KEY}. NGINX_ENVSUBST_FILTER limits
+# the substitution to that one name, so nginx's own $uri/$host survive untouched.
+# Keep the protocol seen by the *browser*. Traefik terminates TLS and talks to this
+# container in plain HTTP, so $scheme is "http" here: forwarding it would tell the API
+# the visitor is not on HTTPS, which breaks Secure cookies and absolute redirects.
+# Falls back to $scheme when no proxy sits in front (local `docker compose`).
+map $http_x_forwarded_proto $forwarded_proto {
+    ""      $scheme;
+    default $http_x_forwarded_proto;
+}
+
+# Pass the chain through untouched when a proxy already set it. The usual
+# $proxy_add_x_forwarded_for would append $remote_addr, which real_ip has just
+# rewritten to the client address — listing it twice for no reason.
+map $http_x_forwarded_for $forwarded_for {
+    ""      $remote_addr;
+    default $http_x_forwarded_for;
+}
+
+server {
+    # 8080 rather than 80: the base image runs unprivileged.
+    listen 8080;
+
+    # Recover the real client address from the proxy in front, so $remote_addr — and
+    # therefore the access log and X-Real-IP — stop showing Traefik's internal IP.
+    # Trust is limited to private ranges: X-Forwarded-For is client-controlled and
+    # must never be believed when it comes straight from the internet.
+    set_real_ip_from 10.0.0.0/8;
+    set_real_ip_from 172.16.0.0/12;
+    set_real_ip_from 192.168.0.0/16;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # Vite hashe le nom de chaque asset, donc le contenu d'une URL ne change jamais.
+    location /assets/ {
+        include /etc/nginx/security-headers.conf;
+
+        # One header only: adding `expires` would emit a second, duplicate one.
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        access_log off;
+        try_files $uri =404;
+    }
+
+    location /api/ {
+        # The API key is added here, server-side, so it never reaches the browser:
+        # the bundle holds no secret. proxy_set_header also overwrites any header a
+        # client sent, so this value is the only one the API ever sees from us.
+        proxy_set_header X-API-Key "${API_KEY}";
+
+        proxy_pass http://api:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $forwarded_for;
+        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    }
+
+    # The OpenAPI docs, served by Litestar.
+    location /schema {
+        proxy_pass http://api:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $forwarded_for;
+        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    }
+
+    # Asked for by browsers on their own. Without this it falls through to the SPA
+    # fallback below and answers HTML with a 200, where an icon is expected.
+    location = /favicon.ico {
+        try_files $uri =404;
+        access_log off;
+    }
+
+    # SPA routing: every other URL returns the app, which routes client-side.
+    # `no-cache` on this HTML, else a browser would keep the old hashed asset names
+    # and never see a deployment.
+    location / {
+        include /etc/nginx/security-headers.conf;
+
+        try_files $uri /index.html;
+        add_header Cache-Control "no-cache" always;
+    }
+}
