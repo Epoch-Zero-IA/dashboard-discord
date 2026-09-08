@@ -152,9 +152,9 @@ de base. La migration n'a jamais été appliquée à un vrai Postgres — seulem
 
 ## Étape 3 — Le worker : frontière, handlers, heartbeat, fast fail
 
-- `bot/events.py` : dataclasses plates. `bot/adapters.py` : conversion depuis les objets
-  discord.py, et **rien d'autre**. `bot/ingest.py` : la logique, qui ne connaît que les
-  dataclasses. C'est la frontière dont dépend tout l'étage 1 des tests.
+- `bot/adapters.py` : conversion depuis les objets discord.py vers les records de
+  `core/records.py`, et **rien d'autre**. C'est la frontière dont dépend tout l'étage 1
+  des tests : rien en aval ne voit un `discord.Message`.
 - `bot/runner.py` : client, intents déclarés, `setup_hook`. Vérification des intents au
   démarrage via `application_info()`, refus de démarrer s'ils manquent, dans l'esprit de
   `ensure_api_key_configured`. **Piège confirmé à l'étape 0** : `ApplicationFlags` expose
@@ -173,6 +173,35 @@ de base. La migration n'a jamais été appliquée à un vrai Postgres — seulem
 **Fini quand** : un message posté sur le serveur de test est en base en moins d'une
 seconde ; couper la base fait sortir le process en code non nul ; une exception injectée
 dans un handler n'interrompt pas la boucle (étage 1).
+
+**Écrit le 2026-09-08, pas encore branché.** Le troisième critère ci-dessus est vérifié ;
+les deux premiers demandent un token et une base, donc restent dus. Ce que l'écriture a
+ajouté au plan :
+
+- **`bot/failures.py`, un module que le plan ne prévoyait pas.** Le fast fail de la
+  section 3 n'est juste que pour une vraie panne : une contrainte violée remonte aussi
+  du pilote, et sortir dessus donnerait une boucle de redémarrages qui n'ingère rien et
+  ressemble trait pour trait à une panne. Une panne tue le process (code 1), un bug est
+  loggué et le worker continue, une erreur de configuration sort en 2 — un redémarrage
+  ne la corrigera jamais. C'est la classification, pas le `close()`, qui était le point
+  délicat de cette étape.
+- **L'isolation des handlers n'est donc pas générale.** Le décorateur avale tout sauf la
+  panne de base, laissée remonter jusqu'à `Client.on_error`, où le runner ferme
+  proprement. discord.py n'arrête pas le client sur une exception de handler : sans ce
+  chemin, un `raise` ne servirait à rien.
+- **Les événements d'édition, de suppression et de réaction sont les variantes `raw`.**
+  Les versions cachées ne se déclenchent que pour les messages encore en mémoire —
+  c'est-à-dire aucun de l'historique après un redémarrage, exactement les messages que
+  ce projet archive.
+- **Le contrôle des intents prend quatre booléens, pas un objet.** discord.py implémente
+  ces drapeaux comme ses propres descripteurs, qu'aucun `Protocol` d'attributs simples
+  ne satisfait ; pyrefly l'a refusé. Les quatre lectures se font à la frontière, dans
+  `runner.py`, ce qui laisse la décision pure et testée — dont le cas `_limited`.
+- `bot/ingest.py` n'existe pas : entre `core/upserts.py` et les handlers, il n'avait
+  aucune décision à porter. `bot/events.py` non plus, les records étant dans `core/`.
+
+`runner.py` et `__main__.py` sont à 0 % de couverture, par construction : ce sont les
+deux seuls modules qui ne décident rien.
 
 ## Étape 4 — Le rattrapage, un composant pour deux usages
 
