@@ -10,8 +10,14 @@ indépendants, chacun avec sa propre spec.
 
 **Lire `docs/superpowers/specs/2026-09-08-bot-discord-socle-design.md` avant de toucher
 au code.** Le document porte le découpage complet, les décisions déjà prises et leurs
-raisons, et surtout ce qui n'est *pas* encore tranché. Il est incomplet à dessein :
-sections 1 et 2 validées, section 3 en attente d'un accord, section 4 à écrire.
+raisons, et surtout ce qui n'est *pas* encore tranché. Ses quatre sections sont
+rédigées.
+
+L'ordre des travaux est dans `docs/superpowers/plans/2026-09-08-bot-discord-socle-plan.md`,
+qui ordonne ces décisions sans en rejuger aucune. Deux règles y gouvernent tout le
+reste : **l'étape 0 (discord.py sous Python 3.14) passe avant toute autre ligne de
+code**, car son échec change la toolchain du dépôt ; et chaque étape laisse `just check`
+vert, donc est mergeable seule.
 
 Les décisions déjà actées qui contraignent tout code écrit dès maintenant :
 
@@ -23,6 +29,14 @@ Les décisions déjà actées qui contraignent tout code écrit dès maintenant 
   touche du code existant.
 - Postgres + advanced-alchemy + Alembic ; identifiants Discord en `BIGINT` comme clés
   primaires, donc écritures idempotentes par upsert.
+- **Les tests tournent sur un vrai Postgres, jamais sur SQLite.** Deux étages : la
+  logique d'ingestion en fonctions pures sur des dataclasses, sans base ; la couche SQL
+  sur une instance réelle, une transaction annulée par test. `just test` saute l'étage 2
+  faute de base, `just check` l'exige.
+- Base injoignable = **fast fail** : le bot sort en code non nul, l'orchestrateur le
+  redémarre, le rattrapage par curseurs recomble le trou. Pas de tampon en mémoire.
+- `alembic upgrade head` à l'entrée de l'image `api`, avant Granian ; `bot` attend
+  `api` sain. Un seul migrateur.
 - La stack LLM sera LangChain + LiteLLM, mais aucun morceau LLM n'est spécifié à ce
   jour.
 
