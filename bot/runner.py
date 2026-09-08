@@ -18,10 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot.adapters import content_edit, message_event, reaction_record
 from bot.catchup import Direction, catch_up_channels
-from bot.config import HEARTBEAT_SECONDS
+from bot.config import DEFAULT_NIGHTLY_HOUR, HEARTBEAT_SECONDS, nightly_hour
 from bot.failures import is_database_unavailable
 from bot.handlers import isolate
 from bot.history import HistorySource
+from bot.nightly import run_nightly
 from bot.startup import ensure_intents_enabled
 from core.upserts import (
     apply_message_edit,
@@ -98,6 +99,11 @@ class Worker(discord.Client):
             guild_members_limited=flags.gateway_guild_members_limited,
         )
         self.heartbeat.start()
+        # The schedule is read here and not at import: `tasks.loop` evaluates its
+        # decorator when the class is defined, which would freeze the hour before any
+        # environment is loaded.
+        self.nightly.change_interval(time=dt.time(hour=nightly_hour(), tzinfo=dt.UTC))
+        self.nightly.start()
 
     async def on_ready(self) -> None:
         """Log the connection, then close whatever gap the downtime left.
@@ -143,12 +149,33 @@ class Worker(discord.Client):
                 log.info("backfill_complete", channels=len(channel_ids))
                 await self.close()
         except Exception as exc:
-            if is_database_unavailable(exc):
-                log.error("database_unavailable", source="catch_up", error=str(exc))
-                self.exit_code = EXIT_DATABASE_UNAVAILABLE
-                await self.close()
+            if await self._abort_if_database_gone(exc, "catch_up"):
                 return
             log.exception("catch_up_failed")
+
+    async def _abort_if_database_gone(self, exc: Exception, source: str) -> bool:
+        """Shut the worker down if `exc` means the database is gone.
+
+        Section 3 of the spec in one method, called from every place that writes: the
+        gateway handlers, the heartbeat and the catch-up. Exit non-zero, let the
+        orchestrator restart us, let the cursors refill the gap.
+
+        Args:
+            exc: The exception to judge.
+            source: What was running, for the log line.
+
+        Returns:
+            True when the shutdown was started, so the caller can stop.
+        """
+        if not is_database_unavailable(exc):
+            return False
+
+        log.error("database_unavailable", source=source, error=str(exc))
+        self.exit_code = EXIT_DATABASE_UNAVAILABLE
+        # Closed properly rather than killed: an abrupt exit leaves the gateway session
+        # half-open and slows the restart down.
+        await self.close()
+        return True
 
     async def on_error(self, event_method: str, /, *args: Any, **kwargs: Any) -> None:
         """Turn a database outage into a shutdown, and anything else into a log line.
@@ -278,10 +305,7 @@ class Worker(discord.Client):
             # `tasks.loop` would otherwise stop the loop and leave the worker alive
             # with a heartbeat frozen in the past — alive to the process manager,
             # invisible to the healthcheck, ingesting nothing.
-            if is_database_unavailable(exc):
-                log.error("database_unavailable", source="heartbeat", error=str(exc))
-                self.exit_code = EXIT_DATABASE_UNAVAILABLE
-                await self.close()
+            if await self._abort_if_database_gone(exc, "heartbeat"):
                 return
             log.exception("heartbeat_failed")
 
@@ -292,4 +316,28 @@ class Worker(discord.Client):
         Otherwise the first beat is written before the connection exists, and claims a
         health the worker has not reached yet.
         """
+        await self.wait_until_ready()
+
+    @tasks.loop(time=dt.time(hour=DEFAULT_NIGHTLY_HOUR, tzinfo=dt.UTC))
+    async def nightly(self) -> None:
+        """Aggregate the day just ended, then purge what is past retention.
+
+        Runs in this process, which is what the single-replica constraint buys: no
+        distributed lock, no separate scheduler, and no way for two runs to overlap.
+        The actual hour comes from the environment, set in `setup_hook`.
+        """
+        try:
+            await run_nightly(
+                self._session_factory, today=dt.datetime.now(dt.UTC).date()
+            )
+        except Exception as exc:
+            if await self._abort_if_database_gone(exc, "nightly"):
+                return
+            # Logged and dropped: the run is replayable, so tomorrow night picks up
+            # whatever this one left behind.
+            log.exception("nightly_failed")
+
+    @nightly.before_loop
+    async def _wait_before_nightly(self) -> None:
+        """Hold the nightly job until the gateway is up, like the heartbeat."""
         await self.wait_until_ready()

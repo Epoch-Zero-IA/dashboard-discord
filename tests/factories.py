@@ -26,6 +26,7 @@ def an_event(
     content: str | None = "bonjour",
     message_id: int = MESSAGE_ID,
     channel_id: int = CHANNEL_ID,
+    created_at: datetime = POSTED_AT,
 ) -> MessageEvent:
     """Build a message event with the dimensions it would have arrived with.
 
@@ -33,6 +34,8 @@ def an_event(
         content: The message body.
         message_id: The snowflake to use.
         channel_id: The channel it was posted in.
+        created_at: When it was posted. The aggregation tests place messages on
+            several different days.
 
     Returns:
         The event, ready to ingest.
@@ -45,7 +48,7 @@ def an_event(
             id=message_id,
             channel_id=channel_id,
             author_id=AUTHOR_ID,
-            created_at=POSTED_AT,
+            created_at=created_at,
             content=content,
         ),
     )

@@ -18,12 +18,12 @@ timestamp of the first insert forever.
 """
 
 from datetime import datetime
-from typing import Any, cast
 
-from sqlalchemy import CursorResult, Result, delete, func, update
+from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.db import rows_affected
 from core.models import (
     HEARTBEAT_ID,
     BotHeartbeat,
@@ -42,24 +42,6 @@ from core.records import (
     ReactionRecord,
     UserRecord,
 )
-
-
-def _rows_affected(result: Result[Any]) -> int:
-    """Return how many rows a DML statement touched.
-
-    `AsyncSession.execute` is typed as returning a `Result`, and the row count lives on
-    the `CursorResult` an UPDATE or a DELETE actually produces. The cast is the
-    documented way across that gap and costs nothing at runtime — and it is worth
-    isolating here, since three callers depend on the count to tell a real no-op from a
-    write.
-
-    Args:
-        result: What the session returned.
-
-    Returns:
-        The number of rows affected.
-    """
-    return cast("CursorResult[Any]", result).rowcount
 
 
 async def upsert_guild(session: AsyncSession, guild: GuildRecord) -> None:
@@ -198,7 +180,7 @@ async def apply_message_edit(
         .where(Message.id == message_id, Message.deleted_at.is_(None))
         .values(content=content, edited_at=edited_at)
     )
-    return _rows_affected(result) > 0
+    return rows_affected(result) > 0
 
 
 async def mark_message_deleted(
@@ -222,7 +204,7 @@ async def mark_message_deleted(
         .where(Message.id == message_id, Message.deleted_at.is_(None))
         .values(content=None, deleted_at=deleted_at)
     )
-    return _rows_affected(result) > 0
+    return rows_affected(result) > 0
 
 
 async def upsert_reaction(session: AsyncSession, reaction: ReactionRecord) -> None:
@@ -258,7 +240,7 @@ async def remove_reaction(session: AsyncSession, reaction: ReactionRecord) -> bo
             Reaction.user_id == reaction.user_id,
         )
     )
-    return _rows_affected(result) > 0
+    return rows_affected(result) > 0
 
 
 async def record_heartbeat(

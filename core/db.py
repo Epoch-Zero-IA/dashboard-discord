@@ -1,6 +1,8 @@
 """Engine, session factory and declarative base for the shared schema."""
 
-from sqlalchemy import MetaData
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, MetaData, Result
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -71,3 +73,21 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
         A session factory.
     """
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+def rows_affected(result: Result[Any]) -> int:
+    """Return how many rows a DML statement touched.
+
+    `AsyncSession.execute` is typed as returning a `Result`, and the row count lives on
+    the `CursorResult` an UPDATE or a DELETE actually produces. The cast is the
+    documented way across that gap and costs nothing at runtime — and it is worth
+    isolating, since several callers depend on the count to tell a real no-op from a
+    write.
+
+    Args:
+        result: What the session returned.
+
+    Returns:
+        The number of rows affected.
+    """
+    return cast("CursorResult[Any]", result).rowcount
