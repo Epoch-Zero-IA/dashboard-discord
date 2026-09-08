@@ -1,7 +1,14 @@
 # Bot Discord — plan d'implémentation du socle (morceau A)
 
 - **Date** : 2026-09-08
-- **État** : à valider.
+- **État** : **les huit étapes sont écrites** (branche `feature/core-schema`). Chaque
+  étape porte son bilan : les écarts au plan, ce que l'écriture a appris, et ce qui n'a
+  pas pu être vérifié.
+- **Ce qui reste dû, et que rien ne remplace** : aucune connexion gateway n'a été
+  ouverte (il faut un `DISCORD_TOKEN` et un serveur de test), et la migration n'a jamais
+  été appliquée à un vrai Postgres — les 32 tests marqués `db` sont écrits et sautés.
+  `just db && just check` sur une machine avec Docker lève les deux, et la CI le fera au
+  premier push.
 - **Spec** : `docs/superpowers/specs/2026-09-08-bot-discord-socle-design.md`. Ce plan ne
   rejuge aucune de ses décisions ; il les ordonne. Toute question de « pourquoi » se
   répond là-bas.
@@ -297,6 +304,26 @@ le rattrapage et le job nocturne — un seul endroit où la règle de la section
 **Fini quand** : `just check-types` vert avec `openapi.json` committé, un test couvre le
 401 sans clé, et le schéma décrit les champs (pas un `dict[str, str]`).
 
+**Fait le 2026-09-08.** Les trois critères sont tenus, et le contrat a pu être vérifié
+malgré l'absence de `pnpm` dans l'environnement : `litestar assets generate-types` écrit
+`openapi.json` avec `json.dumps(schema, indent=2, sort_keys=True)` et un saut de ligne
+final, ce qui se reproduit en Python pur — vérifié **octet pour octet** contre le fichier
+committé avant modification, puis utilisé pour le régénérer. `just check-types` sur une
+machine avec pnpm reste la référence.
+
+- **Le piège du `dict[str, str]` est devenu un test.** Il affirme sur `openapi.json` que
+  la réponse pointe sur `IngestStatus`, que les champs y sont, et que `security` est
+  déclaré — sans quoi le schéma présenterait la route comme libre d'accès. Cela ferme la
+  boucle du garde-fou que `CLAUDE.md` ne faisait que documenter.
+- **La session est injectée sur l'`api_router`, pas sur le contrôleur.** `/api/health`
+  n'en demande aucune et ne doit surtout pas en dépendre : le lier à Postgres ferait
+  redémarrer une API saine chaque fois que la base est lente.
+- **Litestar dépréciait l'inférence du paramètre de dépendance** (« stop working in
+  3.0 ») ; il est annoté `NamedDependency[AsyncSession]`, et la suite passe désormais
+  sous `-W error::DeprecationWarning`.
+- **Un test couvre le piège classique de la double jointure externe** : deux canaux de
+  deux messages qui en rapporteraient quatre chacun.
+
 ## Étape 7 — Déploiement
 
 - `Dockerfile.bot` : `core/` + `bot/` + groupe `bot`. Ni Litestar, ni nginx, ni
@@ -314,6 +341,31 @@ le rattrapage et le job nocturne — un seul endroit où la règle de la section
 
 **Fini quand** : `docker compose up` donne quatre services sains et un message réel
 arrive en base ; la CI est verte sur `develop`.
+
+**Écrit le 2026-09-08, non exécuté.** Aucun des deux critères ne peut l'être ici : pas
+de Docker, pas de token. Les fichiers sont validés autant qu'ils pouvaient l'être — YAML
+parsé, quatre services présents dans les deux composes, aucun port ni `replicas` en
+production, `deploy/api-entrypoint.sh` committé en `100755` (un COPY Docker conserve le
+mode du contexte : sans le bit exécutable, l'`ENTRYPOINT` échoue au premier démarrage).
+
+- **Le healthcheck du worker est un module, pas une ligne de shell.**
+  `python -m bot.healthcheck` lit le heartbeat et tolère trois battements manqués. Sa
+  décision est une fonction pure, testée. Le `except Exception` de son `main` est
+  volontairement aveugle : vu de l'extérieur, un worker qui n'atteint pas sa base est
+  indiscernable d'un worker arrêté, et les deux veulent un redémarrage — narrower, une
+  exception imprévue ferait planter le contrôle lui-même, rapporté comme erreur de
+  healthcheck plutôt que comme conteneur malsain.
+- **Le `set -e` de l'entrypoint est structurant**, pas de la prudence : une migration qui
+  échoue doit arrêter le conteneur plutôt que servir contre un schéma qui ne correspond
+  pas. Le healthcheck ne passant alors jamais, `depends_on` retient `web` et `bot`, et le
+  déploiement remonte l'échec au lieu de servir une application cassée.
+- **La CI est ce qui exécutera la couche SQL pour la première fois.** Le service
+  `postgres:18-alpine` et `TEST_DATABASE_URL` y rendent les tests marqués `db` exigés :
+  c'est ce run qui appliquera la migration et lancera les 32 tests que l'environnement
+  local ne pouvait pas lancer. Attendez-vous à y corriger quelque chose.
+- Reste à vérifier à la main, comme le prévoyait le plan : que l'entrypoint tourne bien
+  **une fois** et non une fois par worker avec `WEB_CONCURRENCY > 1`, et que Coolify
+  reprenne le passage de deux à quatre services, volume `pgdata` compris.
 
 ## Découpage en branches
 
