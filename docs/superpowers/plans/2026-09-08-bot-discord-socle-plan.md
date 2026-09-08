@@ -214,12 +214,35 @@ composant, `bot/catchup.py`.
 - La source des messages est derrière un protocole étroit (`MessageSource`), que les
   tests remplacent par une liste. La décision « où reprendre » redevient une fonction
   pure.
-- Appelé depuis `setup_hook` au démarrage (rattrapage) et par une sous-commande
-  (backfill initial).
+- Appelé au démarrage (rattrapage du trou) et par une sous-commande (backfill initial).
 
 **Fini quand** : reprise depuis un curseur au milieu d'un canal, sans trou ni doublon
 (étage 1) ; un rattrapage rejoué deux fois est idempotent (étage 2) ; et en réel :
 arrêter le bot, poster cinq messages, redémarrer, retrouver les cinq.
+
+**Écrit le 2026-09-08.** Les douze tests de l'étage 1 passent ; les quatre de l'étage 2
+— dont la reprise au milieu d'un canal et le rejeu idempotent — sont écrits et sautés,
+faute de base. Le critère réel reste dû. Trois choses que l'écriture a précisées :
+
+- **La première page en arrière ancre aussi le curseur avant.** Sans cela, un trou de
+  gateway ne saurait pas où finit l'historique connu, et `next_request` en direction
+  avant renverrait `None` pour toujours. C'est le genre de détail qui ne se voit qu'au
+  deuxième redéploiement.
+- **Un rattrapage en avant sans ancre ne demande rien**, plutôt que de partir du début
+  des temps : « tout l'historique » est le travail du backfill, pas d'un trou.
+- **Le curseur est écrit dans la même transaction que la page qu'il décrit.** Le plan
+  disait « après chaque page », ce qui laissait la porte ouverte à deux transactions et
+  donc à un curseur en avance sur les données. Une seule transaction : soit les deux,
+  soit ni l'un ni l'autre.
+
+Deux ajouts hors plan, tous deux du côté I/O : `bot/history.py` implémente
+`MessageSource` sur `channel.history()` — un canal illisible y devient une page vide,
+pas une erreur, sinon un canal sans droits arrêterait le rattrapage des autres — et
+`python -m bot backfill` (recette `just backfill`) fait tourner la même machine sans
+budget de pages, pour l'import initial. Le rattrapage au démarrage, lui, est branché
+sur `on_ready` et non `setup_hook` : le cache des canaux n'existe qu'après l'événement
+READY, et `on_ready` refirant à chaque reconnexion, un garde empêche deux rattrapages
+concurrents de se disputer le même curseur.
 
 ## Étape 5 — Jobs nocturnes : agrégation puis purge
 
