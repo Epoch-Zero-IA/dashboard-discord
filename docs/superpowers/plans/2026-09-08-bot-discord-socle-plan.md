@@ -257,6 +257,32 @@ concurrents de se disputer le même curseur.
 n'est purgé ; un message supprimé, dont `content` est vidé, compte toujours dans
 l'agrégat.
 
+**Écrit le 2026-09-08.** Les cinq tests de l'étage 1 passent ; les neuf de l'étage 2,
+qui portent les trois critères ci-dessus, sont écrits et sautés. Ce que l'écriture a
+ajouté :
+
+- **Réagréger un jour déjà purgé ne remet pas ses compteurs à zéro.** L'`INSERT …
+  SELECT` n'a plus rien à compter et n'écrit donc rien, l'agrégat survit intact. C'est
+  cette propriété qui rend sûre la réagrégation juste avant la purge — laquelle rattrape
+  un jour dont l'agrégation avait échoué la nuit d'avant, et qui serait sinon refusé par
+  `purge_day` pour toujours, les messages s'empilant.
+- **Un message supprimé compte toujours comme message mais n'apporte plus de
+  caractères.** Le contenu est parti : un jour recalculé après une suppression perd ses
+  caractères. C'est le prix d'honorer la suppression, et il est explicite plutôt que
+  découvert dans six mois sur un graphique.
+- **Un budget de sept jours par exécution.** Une première nuit sur une base plus vieille
+  que la fenêtre de rétention supprimerait des mois en une transaction et tiendrait la
+  table plusieurs minutes. `days_to_purge` est la fonction pure de cette étape, et le
+  reste part la nuit suivante.
+- **`NIGHTLY_HOUR_UTC`** rejoint `MESSAGE_RETENTION_DAYS` : l'heure est lue au démarrage
+  et non à l'import, `tasks.loop` évaluant son décorateur à la définition de la classe —
+  ce qui figerait l'heure avant tout chargement d'environnement.
+
+Nettoyage au passage : la fermeture sur panne de base était dupliquée trois fois dans le
+runner. Elle devient `_abort_if_database_gone`, appelée par les handlers, le heartbeat,
+le rattrapage et le job nocturne — un seul endroit où la règle de la section 3 est
+écrite.
+
 ## Étape 6 — La surface API de recette
 
 - `GET /api/ingest/status` dans un nouveau contrôleur, enregistré dans l'`api_router` de
