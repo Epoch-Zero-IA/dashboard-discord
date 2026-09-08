@@ -8,10 +8,15 @@
 #     service and route it to port 8080 (nginx runs unprivileged, hence not 80).
 #   - `restart: unless-stopped`, so a crashed container comes back on its own.
 #
-# `api` gets no domain and no published port: Coolify keeps such services private to
-# the project network, reachable only as `http://api:8000` — which is exactly what
-# nginx does. Give it a domain only if you decide to open the API to third parties,
-# and read the API key section of the README first.
+# Four services: web, api, db and bot. Only `web` gets a domain. Coolify keeps the
+# others private to the project network, reachable as `http://api:8000` and `db:5432` —
+# which is exactly what nginx and the two Python services do. Give `api` a domain only
+# if you decide to open the API to third parties, and read the API key section of the
+# README first. Never give one to `db`.
+#
+# `api` is also the single migrator: its entrypoint runs `alembic upgrade head` before
+# Granian, and `bot` waits for it to be healthy. `bot` runs in one replica,
+# definitively — the comment above that service says why.
 #
 # Coolify treats this file as the source of truth: declare things here, not in the UI.
 
@@ -38,11 +43,18 @@ services:
     environment:
       # Vertical scaling knob: one Granian worker per core is a sane start.
       - WEB_CONCURRENCY=${WEB_CONCURRENCY:-1}
+      # The API is the single migrator: its entrypoint runs `alembic upgrade head`
+      # before Granian, so a failed migration stops the container instead of serving
+      # against a schema it does not match.
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-dashboard}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:-dashboard_discord}
       # Docs off by default here: /schema publishes a full route inventory, and the
       # API has its own public domain on Coolify, so nginx cannot hide them. Set
       # ENABLE_DOCS=true in the project variables to turn them back on temporarily.
       - ENABLE_DOCS=${ENABLE_DOCS:-false}
       - API_KEY=${API_KEY:?}
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       # No curl in the image; the venv's python is on PATH. /api/health is public on
       # purpose, since this check bypasses nginx and therefore carries no key.
@@ -56,3 +68,68 @@ services:
       retries: 5
       start_period: 15s
     restart: unless-stopped
+
+  db:
+    image: postgres:18-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-dashboard}
+      # `:?` makes it a required variable in the Coolify UI: a blank password must block
+      # the deployment, not create a database anyone on the network can open.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?}
+      - POSTGRES_DB=${POSTGRES_DB:-dashboard_discord}
+    # No `ports` and no domain: like `api`, Coolify keeps this private to the project
+    # network, reachable only as `db:5432`. Publishing it would expose Postgres to the
+    # host, and through it to the internet.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` and not a TCP probe: Postgres accepts connections seconds before it
+      # can answer, and `depends_on: service_healthy` would let the API race it and lose.
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-dashboard} -d ${POSTGRES_DB:-dashboard_discord}
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ONE REPLICA, DEFINITIVELY. Two workers connected to the same gateway receive every
+  # message twice and write it twice; nothing in the Discord protocol divides the work
+  # between them. There is deliberately no `deploy.replicas` here, and adding one would
+  # double every statistic silently. WEB_CONCURRENCY remains a valid knob — for `api`.
+  #
+  # The scheduled jobs (heartbeat, nightly aggregation and purge) live inside this
+  # process precisely because of that constraint: no distributed lock, no separate
+  # scheduler, no double execution. They are what has to move out the day this scales.
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN:?}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-dashboard}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:-dashboard_discord}
+      - MESSAGE_RETENTION_DAYS=${MESSAGE_RETENTION_DAYS:-90}
+      - NIGHTLY_HOUR_UTC=${NIGHTLY_HOUR_UTC:-3}
+    # `api` applies the migrations in its entrypoint, so waiting for it to be healthy is
+    # how the worker gets a schema it matches.
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # The heartbeat in the database, not an HTTP port: it proves the process lives,
+      # the gateway connection is up and Postgres answers. A port proves the first only.
+      test:
+        - CMD
+        - python
+        - -m
+        - bot.healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # The backoff behind the fast fail: when Postgres goes away the worker exits
+    # non-zero and this brings it back, while the ingestion cursors refill the gap.
+    restart: unless-stopped
+
+volumes:
+  pgdata:

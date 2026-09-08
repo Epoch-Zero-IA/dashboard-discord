@@ -18,11 +18,37 @@ env:
   # the Vite plugin commands; normally set via .env, which is absent in CI.
   LITESTAR_APP: backend.app:app
   PYTHONPATH: .
+  # The database the `db`-marked tests run against. `just check` passes --require-db,
+  # so a missing or unreachable one fails the job instead of quietly skipping half the
+  # suite. It must name a database of its own: the harness migrates it.
+  TEST_DATABASE_URL: postgresql+asyncpg://dashboard:dashboard@127.0.0.1:5432/dashboard_discord_test
 
 jobs:
   check:
     name: Lint + test
     runs-on: ubuntu-latest
+
+    # A real Postgres, because the tests do not run on SQLite: the upserts, the
+    # tz-aware timestamps and the partial indexes are exactly what SQLite would have
+    # failed to exercise (see section 4 of the socle spec). The runner already has
+    # Docker, so this costs a service block and no Python dependency.
+    services:
+      db:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: dashboard
+          POSTGRES_PASSWORD: dashboard
+          POSTGRES_DB: dashboard_discord_test
+        ports:
+          - 5432:5432
+        # The job steps run on the host, not in the compose network, so the port is
+        # published and the health options gate the first step until Postgres answers.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 

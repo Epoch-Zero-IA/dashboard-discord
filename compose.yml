@@ -68,5 +68,35 @@ services:
       timeout: 3s
       retries: 10
 
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    environment:
+      # Same fail-closed regime as API_KEY: a missing token must stop the deployment
+      # rather than start a worker that connects to nothing.
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env (see .env.example)}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dashboard}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}@db:5432/${POSTGRES_DB:-dashboard_discord}
+      MESSAGE_RETENTION_DAYS: ${MESSAGE_RETENTION_DAYS:-90}
+      NIGHTLY_HOUR_UTC: ${NIGHTLY_HOUR_UTC:-3}
+    # Waits for the API, which is what applies the migrations: the worker must never
+    # start against a schema it does not match.
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # Reads its own heartbeat from the database, not an HTTP port: that is the only
+      # check proving the process lives, the gateway is connected *and* Postgres
+      # answers. start_period covers the first beat.
+      test:
+        - CMD
+        - python
+        - -m
+        - bot.healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
 volumes:
   pgdata:
