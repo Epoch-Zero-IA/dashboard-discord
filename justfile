@@ -63,9 +63,16 @@ format:
     uv run ruff check --fix .
     pnpm -C frontend run format
 
-# Run the test suite with coverage.
+# Run the test suite with coverage. With no database reachable, the `db`-marked tests
+# skip with a message naming `just db`, and the rest of the suite still runs.
 test:
     uv run pytest
+
+# The same suite, with an unreachable database treated as an error instead of a skip.
+# This is what `just check` and the CI run: the gate before a push must not go green
+# having quietly run half of it. Needs `just db` locally; CI provides the service.
+test-with-db:
+    uv run pytest --require-db
 
 # Build the production frontend bundle into frontend/dist (no Python needed).
 build:
@@ -77,5 +84,22 @@ build:
 check-types: types
     git diff --exit-code openapi.json
 
-# Full gate before pushing (what CI runs): contract check + lint + tests.
-check: check-types lint test
+# Full gate before pushing (what CI runs): contract check + lint + tests, database included.
+check: check-types lint test-with-db
+
+# Start the Postgres service alone. The tests, alembic and `just dev-bot` all run on
+# the host and reach it over the published port, so this is the one service worth
+# starting by itself.
+db:
+    docker compose up -d db
+
+# Apply every pending migration to the database DATABASE_URL points at.
+migrate:
+    uv run alembic upgrade head
+
+# Write a migration from the gap between the models and the database. Autogenerate
+# diffs against a live, already-migrated database — not against the revision history —
+# so `just db && just migrate` come first, and the generated file gets read before it
+# gets committed.
+migration m:
+    uv run alembic revision --autogenerate -m "{{m}}"

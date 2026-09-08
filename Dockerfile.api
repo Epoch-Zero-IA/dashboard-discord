@@ -13,7 +13,9 @@ WORKDIR /app
 # Dependencies alone first: application code changes far more often than they do,
 # so this layer stays cached.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+# `--no-default-groups --group api`: Litestar lives in the `api` dependency group, so
+# a plain `--no-dev` would install the bot group too and put discord.py in this image.
+RUN uv sync --frozen --no-default-groups --group api
 
 FROM debian:bookworm-slim AS runtime
 
@@ -22,6 +24,8 @@ RUN useradd -m -u 10001 app
 COPY --from=builder --chown=app:app /python /python
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app backend /app/backend
+# core/ owns the schema and is imported by the API; it ships in both images.
+COPY --chown=app:app core /app/core
 
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONUNBUFFERED=1 \
     LITESTAR_APP=backend.app:app
