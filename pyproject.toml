@@ -73,6 +73,12 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["backend", "core"]
 
+# Migrations are not application code: each one runs once, in one direction, and
+# counting them would sink the figure a little further with every revision. The
+# harness still executes them — `alembic upgrade head` is how the test database gets
+# its schema — and tests/test_migrations_match_models.py checks their content.
+omit = ["core/migrations/*"]
+
 [tool.coverage.report]
 # TYPE_CHECKING blocks and the `if __name__ == "__main__"` guard never run under tests.
 exclude_also = [
