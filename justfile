@@ -103,3 +103,21 @@ migrate:
 # gets committed.
 migration m:
     uv run alembic revision --autogenerate -m "{{m}}"
+
+# The Discord worker alone, against the local database. Needs DISCORD_TOKEN and both
+# privileged intents enabled in the developer portal — the worker refuses to start
+# otherwise, on purpose.
+dev-bot:
+    uv run python -m bot
+
+# The whole stack: API, frontend and worker. `just dev` deliberately leaves the worker
+# out, so that working on the frontend needs no token and opens no real gateway
+# connection.
+dev-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    just dev-api &
+    just dev-front &
+    just dev-bot &
+    wait

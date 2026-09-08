@@ -60,9 +60,12 @@ pythonpath = ["."]
 
 # Measure coverage of the first-party packages on every run; `term-missing` prints the
 # uncovered line numbers so gaps are visible without opening an HTML report.
-# `--cov=bot` joins the list when that package appears (step 3 of the plan): naming a
-# package that does not exist yet only buys a coverage warning on every run.
-addopts = ["--cov=backend", "--cov=core", "--cov-report=term-missing"]
+addopts = [
+    "--cov=backend",
+    "--cov=core",
+    "--cov=bot",
+    "--cov-report=term-missing",
+]
 
 # Silence third-party noise: rich_click 1.9.8 (pulled in by litestar) uses click APIs
 # deprecated in click 9.0. Not our code and nothing to bump, so ignore it.
@@ -71,7 +74,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["backend", "core"]
+source = ["backend", "core", "bot"]
 
 # Migrations are not application code: each one runs once, in one direction, and
 # counting them would sink the figure a little further with every revision. The
@@ -89,6 +92,6 @@ exclude_also = [
 # Without this section pyrefly falls back to the `basic` preset, covers no project
 # file and reports "0 errors" having checked nothing. Listing the sources is what
 # makes the type-checking half of `just lint` worth anything. `pyrefly dump-config`
-# prints the files actually covered. `bot` joins the list with the package itself.
+# prints the files actually covered.
 [tool.pyrefly]
-project-includes = ["backend", "core", "tests"]
+project-includes = ["backend", "core", "bot", "tests"]
