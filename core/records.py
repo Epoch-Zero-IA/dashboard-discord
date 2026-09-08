@@ -80,3 +80,17 @@ class MessageEvent:
     channel: ChannelRecord
     author: UserRecord
     message: MessageRecord
+
+
+@dataclass(frozen=True, slots=True)
+class CursorRecord:
+    """How far the ingestion has got in one channel, as a flat value.
+
+    The catch-up machinery decides what to fetch next from this and nothing else, which
+    is what keeps that decision a pure function rather than a query.
+    """
+
+    channel_id: int
+    oldest_message_id: int | None = None
+    newest_message_id: int | None = None
+    is_complete: bool = False

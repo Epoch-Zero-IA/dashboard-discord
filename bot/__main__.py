@@ -19,6 +19,8 @@ from core.db import create_engine, create_session_factory
 
 log = structlog.get_logger(__name__)
 
+BACKFILL_COMMAND = "backfill"
+
 
 def configure_logging() -> None:
     """Set up structlog: coloured console on a TTY, JSON otherwise.
@@ -44,8 +46,12 @@ def configure_logging() -> None:
     )
 
 
-async def run() -> int:
+async def run(*, backfill: bool = False) -> int:
     """Connect, ingest until stopped, and report how it ended.
+
+    Args:
+        backfill: Run the history import to completion and exit, rather than listening
+            to the gateway indefinitely.
 
     Returns:
         The exit code: 0 on a clean stop, 1 when the database went away, 2 when the
@@ -55,7 +61,7 @@ async def run() -> int:
     # Read before connecting: a missing DATABASE_URL must not cost a gateway session,
     # and it is the one error a restart will never fix.
     engine = create_engine(database_url())
-    worker = Worker(create_session_factory(engine))
+    worker = Worker(create_session_factory(engine), backfill=backfill)
     try:
         await worker.start(token)
     finally:
@@ -72,8 +78,11 @@ def main() -> int:
         The process exit code.
     """
     configure_logging()
+    # One optional argument, so `argparse` would be three times the code: `backfill`
+    # runs the import to completion, anything else listens.
+    backfill = len(sys.argv) > 1 and sys.argv[1] == BACKFILL_COMMAND
     try:
-        return asyncio.run(run())
+        return asyncio.run(run(backfill=backfill))
     except MisconfiguredError as exc:
         # Logged rather than raised: a traceback here points at our own `raise`, while
         # the message names the variable to set, which is the only actionable part.

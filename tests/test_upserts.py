@@ -9,21 +9,14 @@ keys, so every write is an upsert and replaying an event is indistinguishable fr
 seeing it once. The catch-up machinery of step 4 replays overlapping pages on purpose.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.models import HEARTBEAT_ID, BotHeartbeat, IngestCursor, Message, Reaction
-from core.records import (
-    ChannelRecord,
-    GuildRecord,
-    MessageEvent,
-    MessageRecord,
-    ReactionRecord,
-    UserRecord,
-)
+from core.records import ReactionRecord
 from core.upserts import (
     apply_message_edit,
     ingest_message,
@@ -33,38 +26,7 @@ from core.upserts import (
     save_cursor,
     upsert_reaction,
 )
-
-GUILD_ID = 1000000000000000001
-CHANNEL_ID = 1000000000000000002
-AUTHOR_ID = 1000000000000000003
-MESSAGE_ID = 1000000000000000004
-POSTED_AT = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
-
-
-def an_event(
-    *, content: str | None = "bonjour", message_id: int = MESSAGE_ID
-) -> MessageEvent:
-    """Build a message event with its dimensions.
-
-    Args:
-        content: The message body.
-        message_id: The snowflake to use.
-
-    Returns:
-        The event, ready to ingest.
-    """
-    return MessageEvent(
-        guild=GuildRecord(id=GUILD_ID, name="Serveur de test"),
-        channel=ChannelRecord(id=CHANNEL_ID, guild_id=GUILD_ID, name="general"),
-        author=UserRecord(id=AUTHOR_ID, username="alice", display_name="Alice"),
-        message=MessageRecord(
-            id=message_id,
-            channel_id=CHANNEL_ID,
-            author_id=AUTHOR_ID,
-            created_at=POSTED_AT,
-            content=content,
-        ),
-    )
+from tests.factories import AUTHOR_ID, CHANNEL_ID, MESSAGE_ID, POSTED_AT, an_event
 
 
 @pytest.mark.db

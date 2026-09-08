@@ -121,3 +121,9 @@ dev-all:
     just dev-front &
     just dev-bot &
     wait
+
+# Import the history of every readable channel, to completion, then exit. The catch-up
+# on startup is budgeted so it does not hold the connection for an hour; this is the
+# same machinery with the budget removed. Resumable: it picks up at the cursors.
+backfill:
+    uv run python -m bot backfill

@@ -6,6 +6,7 @@ scheduled jobs below need no distributed lock — and the day the worker has to 
 they have to move out.
 """
 
+import asyncio
 import datetime as dt
 import sys
 from typing import Any
@@ -16,9 +17,11 @@ from discord.ext import tasks
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot.adapters import content_edit, message_event, reaction_record
+from bot.catchup import Direction, catch_up_channels
 from bot.config import HEARTBEAT_SECONDS
 from bot.failures import is_database_unavailable
 from bot.handlers import isolate
+from bot.history import HistorySource
 from bot.startup import ensure_intents_enabled
 from core.upserts import (
     apply_message_edit,
@@ -48,19 +51,35 @@ EXIT_OK = 0
 EXIT_DATABASE_UNAVAILABLE = 1
 EXIT_MISCONFIGURED = 2
 
+# Pages per channel per start, for the catch-up that runs on connection. Twenty pages is
+# two thousand messages: enough to close any realistic redeploy gap, while a first
+# backfill of a busy channel would otherwise hold the startup for an hour. What is left
+# is picked up at the next start, or by `python -m bot backfill`, since the cursor
+# survives.
+STARTUP_PAGE_BUDGET = 20
+
 
 class Worker(discord.Client):
     """Listens to the gateway and writes through `core.upserts`."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        backfill: bool = False,
+    ) -> None:
         """Build the client.
 
         Args:
             session_factory: Where every write gets its session.
+            backfill: Run the catch-up to completion and exit, instead of listening.
+                This is `python -m bot backfill`, for the initial import.
         """
         super().__init__(intents=INTENTS)
         self._session_factory = session_factory
+        self._backfill = backfill
         self._started_at = dt.datetime.now(dt.UTC)
+        self._catch_up_task: asyncio.Task[None] | None = None
         self.exit_code = EXIT_OK
 
     async def setup_hook(self) -> None:
@@ -81,8 +100,55 @@ class Worker(discord.Client):
         self.heartbeat.start()
 
     async def on_ready(self) -> None:
-        """Log the connection once it is established."""
+        """Log the connection, then close whatever gap the downtime left.
+
+        `on_ready` fires again on every reconnection, hence the guard: a second
+        catch-up running beside the first would fetch the same pages twice and fight
+        over the same cursor.
+        """
         log.info("gateway_ready", user=str(self.user), guilds=len(self.guilds))
+        if self._catch_up_task is None or self._catch_up_task.done():
+            self._catch_up_task = asyncio.create_task(self._catch_up())
+
+    async def _catch_up(self) -> None:
+        """Fill the gateway gap, then push the backfill a little further.
+
+        Forward first: the messages posted while the worker was down are the ones the
+        dashboard is missing right now. The backward walk is history, and it can wait
+        for the next start — which is exactly what the page budget makes it do.
+
+        A failure here is logged and dropped rather than raised: the cursors mean the
+        work resumes by itself, and a failed catch-up must not cost the live ingestion
+        that is already running.
+        """
+        channel_ids = [
+            channel.id
+            for channel in self.get_all_channels()
+            if isinstance(channel, discord.TextChannel)
+        ]
+        source = HistorySource(self)
+        # No budget in backfill mode: the point of that command is to finish.
+        budget = None if self._backfill else STARTUP_PAGE_BUDGET
+        try:
+            for direction in (Direction.FORWARD, Direction.BACKWARD):
+                ingested = await catch_up_channels(
+                    self._session_factory,
+                    source,
+                    channel_ids,
+                    direction,
+                    max_pages=budget,
+                )
+                log.info("catch_up_done", direction=direction, messages=ingested)
+            if self._backfill:
+                log.info("backfill_complete", channels=len(channel_ids))
+                await self.close()
+        except Exception as exc:
+            if is_database_unavailable(exc):
+                log.error("database_unavailable", source="catch_up", error=str(exc))
+                self.exit_code = EXIT_DATABASE_UNAVAILABLE
+                await self.close()
+                return
+            log.exception("catch_up_failed")
 
     async def on_error(self, event_method: str, /, *args: Any, **kwargs: Any) -> None:
         """Turn a database outage into a shutdown, and anything else into a log line.
