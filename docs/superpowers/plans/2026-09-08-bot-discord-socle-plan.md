@@ -92,6 +92,20 @@ solidaires : le premier écrit une ligne et **commit**, le second affirme que la
 vide. Sans `create_savepoint`, le second échoue — c'est exactement le test qu'on veut
 avoir écrit avant d'en dépendre.
 
+**Fait le 2026-09-08.** Trois écarts au plan ci-dessus, tous constatés en écrivant :
+
+- La fixture qui migre est **synchrone**. L'`env.py` d'Alembic appelle `asyncio.run`,
+  qui lève depuis une boucle déjà en cours : la version async de cette fixture, celle
+  qui a l'air naturelle, ne peut pas marcher.
+- `--cov=bot` et `bot` dans `project-includes` attendent l'étape 3. Nommer un package
+  qui n'existe pas encore n'achète qu'un avertissement de coverage à chaque run.
+- `testpaths = ["tests"]` s'ajoute : pytest partait de la racine, ramassait un second
+  checkout du projet posé à côté, et ses modules entraient en collision de basename
+  avec les vrais. La collecte méritait d'être bornée de toute façon.
+
+La vérification qui reste due : aucune base n'était joignable dans l'environnement où
+l'étape a été écrite. Les deux tests solidaires du harnais sont **sautés, pas verts**.
+
 ## Étape 2 — Schéma, première migration, upserts
 
 - Modèles : `guild`, `channel`, `discord_user`, `message`, `reaction`, `daily_activity`,
@@ -109,6 +123,32 @@ avoir écrit avant d'en dépendre.
 **Fini quand** : réingestion du même message → une seule ligne ; suppression → `content`
 vidé et `deleted_at` posé, ligne conservée ; édition d'un message absent → no-op sans
 exception ; `upgrade head` → `downgrade base` → `upgrade head` sur une base vierge.
+
+**Fait le 2026-09-08.** Ce que l'écriture a changé ou appris :
+
+- **Les dataclasses plates vivent dans `core/records.py`**, pas dans `bot/events.py`
+  comme l'annonçait l'étape 3. Elles sont le type d'argument de `core/upserts.py` : les
+  laisser dans `bot/` obligerait `core` à dépendre de `bot`, ou à redéclarer les mêmes
+  huit champs de l'autre côté de la frontière. L'étape 3 garde `bot/adapters.py`, qui
+  convertit désormais vers ces records.
+- **`reply_to_id` n'est pas une clé étrangère.** Une réponse peut viser un message plus
+  ancien que le backfill, ou déjà purgé ; une contrainte rejetterait la réponse au lieu
+  de la seule chose qu'on ne puisse pas réparer.
+- **L'upsert de message porte `WHERE deleted_at IS NULL`.** Sans lui, un rattrapage qui
+  relit un message déjà supprimé ressuscite son contenu.
+- **La convention de nommage de `core.db.metadata` s'applique aussi aux opérations
+  Alembic.** Un `name="ck_bot_heartbeat_single_row"` explicite dans la migration
+  ressortait en `ck_bot_heartbeat_ck_bot_heartbeat_single_row` : il faut donner le nom
+  nu, comme le modèle.
+- **Un test referme un trou que la section 4 de la spec déclarait ouvert.** Les deux DDL
+  — celui des modèles via un mock engine, celui des migrations via le mode `--sql`
+  d'Alembic — se rendent hors base et se comparent. Un modèle modifié sans migration
+  échoue donc dans la suite rapide, sans Docker
+  (`tests/test_migrations_match_models.py`), et le test a été vérifié par mutation. Ce
+  qu'il ne prouve pas : que ce SQL s'exécute.
+
+Même réserve qu'à l'étape 1 : les onze tests d'upsert sont écrits et **sautés**, faute
+de base. La migration n'a jamais été appliquée à un vrai Postgres — seulement rendue.
 
 ## Étape 3 — Le worker : frontière, handlers, heartbeat, fast fail
 
