@@ -94,3 +94,23 @@ class CursorRecord:
     oldest_message_id: int | None = None
     newest_message_id: int | None = None
     is_complete: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelIngestRecord:
+    """What has been ingested in one channel, for the acceptance endpoint."""
+
+    channel_id: int
+    channel_name: str
+    message_count: int
+    oldest_message_id: int | None = None
+    newest_message_id: int | None = None
+    is_complete: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class HeartbeatRecord:
+    """The worker's last proof of life."""
+
+    beat_at: datetime
+    session_started_at: datetime

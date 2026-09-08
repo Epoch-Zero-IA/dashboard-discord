@@ -105,3 +105,18 @@ def message_retention_days() -> int:
         )
         raise MisconfiguredError(msg)
     return days
+
+
+def ensure_database_configured() -> None:
+    """Refuse to start when the database URL is missing.
+
+    Checked at startup rather than at import, exactly like
+    `backend.security.ensure_api_key_configured`: the CLI and Alembic both import this
+    module for reasons that need no connection, and the API must fail while the
+    container is still starting rather than answer 500 to every call that reaches the
+    database.
+
+    Raises:
+        MisconfiguredError: If the URL is unset or empty.
+    """
+    database_url()

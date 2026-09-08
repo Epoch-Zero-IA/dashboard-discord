@@ -1,5 +1,6 @@
 from litestar import Litestar, Router
 from litestar.data_extractors import RequestExtractorField, ResponseExtractorField
+from litestar.di import Provide
 from litestar.middleware.rate_limit import DurationUnit, RateLimitConfig
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
@@ -13,9 +14,12 @@ from litestar_vite import TypeGenConfig, ViteConfig, VitePlugin
 from litestar_vite.config import PathConfig, RuntimeConfig
 
 from backend import DOCS_ENABLED, FRONTEND_ROOT, OPENAPI_SCHEMA
+from backend.db import db_lifespan, provide_session
 from backend.exceptions import AppError, app_error_handler
+from backend.ingest import IngestController
 from backend.routes import ApiController
 from backend.security import API_KEY_HEADER, ensure_api_key_configured, identify_client
+from core.config import ensure_database_configured
 
 # nginx serves the frontend, not Litestar: `enabled=False` makes the plugin inert at
 # runtime (no HTML catch-all, no static files, no lifespan, no Vite process). The
@@ -77,7 +81,14 @@ plugins = [
 
 # All Python routes live under /api to avoid collisions with the Svelte SPA (served
 # at / by the Vite plugin). Register every controller here, not with a hardcoded prefix.
-api_router = Router(path="/api", route_handlers=[ApiController])
+api_router = Router(
+    path="/api",
+    route_handlers=[ApiController, IngestController],
+    # Injected here rather than per controller: every route that touches the database
+    # wants the same session, and /api/health deliberately asks for none — binding it
+    # to a session would make the healthcheck fail whenever Postgres is slow.
+    dependencies={"session": Provide(provide_session)},
+)
 
 
 def build_openapi_config(*, docs_enabled: bool) -> OpenAPIConfig | None:
@@ -149,6 +160,8 @@ app = Litestar(
     exception_handlers={AppError: app_error_handler},
     openapi_config=build_openapi_config(docs_enabled=DOCS_ENABLED),
     # Checked at startup, not at import: the CLI (`litestar assets generate-types`)
-    # loads this module without needing a key.
-    on_startup=[ensure_api_key_configured],
+    # loads this module without needing a key, nor a database.
+    on_startup=[ensure_api_key_configured, ensure_database_configured],
+    # One engine for the process, disposed on shutdown.
+    lifespan=[db_lifespan],
 )

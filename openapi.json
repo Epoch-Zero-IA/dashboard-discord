@@ -1,6 +1,52 @@
 {
   "components": {
     "schemas": {
+      "ChannelStatus": {
+        "properties": {
+          "channel_id": {
+            "type": "integer"
+          },
+          "channel_name": {
+            "type": "string"
+          },
+          "is_complete": {
+            "type": "boolean"
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "newest_message_id": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "oldest_message_id": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "channel_id",
+          "channel_name",
+          "is_complete",
+          "message_count",
+          "newest_message_id",
+          "oldest_message_id"
+        ],
+        "title": "ChannelStatus",
+        "type": "object"
+      },
       "Greeting": {
         "properties": {
           "message": {
@@ -23,6 +69,54 @@
         },
         "required": [],
         "title": "HealthCheck",
+        "type": "object"
+      },
+      "IngestStatus": {
+        "properties": {
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelStatus"
+            },
+            "type": "array"
+          },
+          "heartbeat": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkerHeartbeat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_messages": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channels",
+          "heartbeat",
+          "total_messages"
+        ],
+        "title": "IngestStatus",
+        "type": "object"
+      },
+      "WorkerHeartbeat": {
+        "properties": {
+          "beat_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "session_started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "beat_at",
+          "session_started_at"
+        ],
+        "title": "WorkerHeartbeat",
         "type": "object"
       }
     },
@@ -84,6 +178,31 @@
           }
         ],
         "summary": "Hello"
+      }
+    },
+    "/api/ingest/status": {
+      "get": {
+        "deprecated": false,
+        "operationId": "ApiIngestStatusIngestStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestStatus"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "APIKey": []
+          }
+        ],
+        "summary": "IngestStatus"
       }
     }
   },

@@ -15,10 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from backend.app import app
 from backend.security import API_KEY_ENV_VAR
-from core.config import MisconfiguredError, harness_database_url
+from core.config import DATABASE_URL_ENV_VAR, MisconfiguredError, harness_database_url
 from core.db import create_engine
 
 TEST_API_KEY = "test-api-key"
+# Where the application points when no test database is configured. Never connected to:
+# the engine is built at startup but only dials on the first query, so the routes that
+# touch no database — and /api/health is one by design — work regardless.
+UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"
 PROJECT_ROOT = Path(__file__).parents[1]
 REQUIRE_DB_OPTION = "--require-db"
 
@@ -58,11 +62,22 @@ def anyio_backend() -> str:
 async def client() -> AsyncIterator[AsyncTestClient[Litestar]]:
     """Fixture for creating an async test client.
 
-    The app refuses to start without an API key, so one is set before the lifespan
-    runs. The context manager restores the environment afterwards.
+    The app refuses to start without an API key *or* a database URL, so both are set
+    before the lifespan runs. The context manager restores the environment afterwards.
+
+    The URL is the test database when there is one, so that a `db`-marked test can call
+    a route that reads for real — and a placeholder otherwise. One client for the whole
+    session either way: `app` is a module-level singleton, and a second lifespan over it
+    would dispose the engine the first one is still holding.
     """
+    try:
+        database_url = harness_database_url()
+    except MisconfiguredError:
+        database_url = UNREACHABLE_DATABASE_URL
+
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setenv(API_KEY_ENV_VAR, TEST_API_KEY)
+        monkeypatch.setenv(DATABASE_URL_ENV_VAR, database_url)
         app.debug = True
         async with AsyncTestClient(app=app) as _client:
             yield _client
