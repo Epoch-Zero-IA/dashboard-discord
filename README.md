@@ -59,6 +59,11 @@ Il faut [uv](https://docs.astral.sh/uv/), [pnpm](https://pnpm.io/) et Node `^20.
 ou `>=22.12`, contrainte de Vite 8. [`just`](https://github.com/casey/just) est
 recommandé (`uv tool install rust-just`) mais facultatif.
 
+Il faut aussi **Docker**, et pas seulement pour déployer : Postgres tourne dedans en
+développement (`just db`), et les tests marqués `db` — un bon tiers de la suite —
+l'exigent. `just check`, la porte avant push, échoue sans base plutôt que de sauter ces
+tests en silence.
+
 ```bash
 cp .env.example .env
 just install          # uv sync + litestar assets install
@@ -73,7 +78,10 @@ uv run litestar assets install
 
 Ne sautez pas la copie du `.env` : il définit `LITESTAR_APP`. Sans lui, la CLI
 cherche l'application à la racine et ne la trouve pas, puisque le code est dans
-`backend/`.
+`backend/`. Trois valeurs y sont à remplir avant de démarrer quoi que ce soit :
+`API_KEY`, `POSTGRES_PASSWORD` et `DISCORD_TOKEN` — les deux dernières bloquent
+`docker compose up` si elles manquent, et le worker refuse de démarrer sans la
+troisième.
 
 ## Commandes
 
