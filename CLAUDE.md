@@ -233,6 +233,21 @@ migrations elles-mêmes. Le raisonnement complet est en section 4 de la spec du 
   `db_sessions`, le trick de transaction ne vivant qu'à un seul endroit.
 - `migrated_database` tronque toutes les tables une fois par session : « la suite part
   d'une base vide » doit être vrai, pas espéré.
+- **Sans Docker**, un Postgres réel reste accessible par un Postgres empaqueté en wheel,
+  hors du projet et sans root. `pgserver` n'a pas de roue pour 3.14, mais le serveur n'a
+  aucune raison de tourner sur le même Python que la suite :
+
+  ```bash
+  uv run --no-project --python 3.12 --with pgserver python -c \
+    "import pgserver; s = pgserver.get_server('/tmp/pgdata_socle', cleanup_mode=None); \
+     s.psql('CREATE DATABASE dashboard_discord_test'); print(s.get_uri())"
+  export TEST_DATABASE_URL="postgresql+asyncpg://postgres@/dashboard_discord_test?host=/tmp/pgdata_socle"
+  uv run pytest --require-db
+  ```
+
+  C'est ainsi que les 130 tests ont été exécutés pour la première fois. La version
+  empaquetée est Postgres **16**, là où les composes et la CI déclarent 18 : bon pour
+  lever un doute, pas pour valider un déploiement.
 - `tests/factories.py` construit les records ; ne redéclarez pas un `an_event` local.
 
 `tests/conftest.py` applique automatiquement le marqueur `anyio` à toute fonction de test
