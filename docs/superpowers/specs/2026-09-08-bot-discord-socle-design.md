@@ -92,10 +92,19 @@ clés primaires naturelles — pas de clé de substitution. Toute écriture devi
 | Table | Contenu |
 |---|---|
 | `guild`, `channel`, `discord_user` | dimensions, mises à jour à la volée quand on les croise |
+| `bot_heartbeat` | une ligne, la preuve de vie que lit le healthcheck du worker |
 | `message` | `id`, `channel_id`, `author_id`, `created_at`, `edited_at`, `deleted_at`, `content`, `reply_to_id`, compteurs de pièces jointes |
 | `reaction` | `message_id`, `emoji`, `user_id` |
 | `daily_activity` | agrégat `(date, channel_id, author_id)` → nb messages, nb caractères |
 | `ingest_cursor` | par canal : plus ancien et plus récent message ingéré, état de complétion |
+
+**Les fils sont des canaux** (ajout du 2026-09-09, constaté à la première connexion
+réelle). Un fil Discord porte des messages exactement comme un canal, et une partie des
+conversations du serveur y vit. Il prend donc une ligne dans `channel`, avec `is_thread`
+pour le distinguer et `parent_id` pour dire sous quel canal il pend. Une table à part
+aurait fait pointer `message.channel_id` vers l'une de deux tables. Deux limites
+assumées : le rattrapage ne parcourt que les fils **actifs**, et un salon forum n'étant
+fait que de fils, il reste invisible tant qu'aucun des siens ne l'est.
 
 - **Rétention.** Un job nocturne agrège dans `daily_activity` puis purge `message`
   au-delà de `MESSAGE_RETENTION_DAYS` (défaut 90). L'agrégat survit indéfiniment : le

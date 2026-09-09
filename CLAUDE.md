@@ -9,10 +9,11 @@ indépendants, chacun avec sa propre spec. **Le morceau A — le socle : worker 
 schéma Postgres, ingestion, rattrapage, jobs nocturnes — est écrit** (branche
 `feature/core-schema`). Les morceaux B à G ne sont pas commencés.
 
-La connexion gateway est vérifiée (2026-09-09) : `discord.py` tourne sous CPython 3.14
-et le contrôle des intents passe sur la configuration réelle — où Discord n'expose les
-deux intents privilégiés que sur ses drapeaux `_limited`, le cas que le contrôle devait
-absolument accepter.
+La connexion gateway est vérifiée (2026-09-09), sur le serveur Epoch Zéro : `discord.py`
+tourne sous CPython 3.14, le contrôle des intents passe sur la configuration réelle — où
+Discord n'expose les deux intents privilégiés que sur ses drapeaux `_limited`, le cas que
+le contrôle devait absolument accepter — et une page de cent messages a été lue et
+convertie en records, contenu compris.
 
 **Ce qui reste dû, et que rien ne remplace : la migration n'a jamais été appliquée à un
 vrai Postgres**, et les 32 tests marqués `db` sont écrits et sautés. `just db && just
@@ -45,6 +46,11 @@ Les décisions actées qui contraignent tout code écrit ici :
 - **Tout ce qui décide est une fonction pure ; tout ce qui parle à discord.py est
   mince.** `bot/adapters.py` convertit à la frontière, et rien en aval ne voit un
   `discord.Message`. C'est ce qui rend le worker testable sans simuler la bibliothèque.
+- **Les fils sont des canaux.** Un `Thread` prend une ligne dans `channel`, avec
+  `is_thread` et `parent_id`. Tout code qui filtre les canaux doit accepter
+  `discord.Thread` autant que `discord.TextChannel` : ne garder que le second ingérait
+  les fils en temps réel sans jamais les rattraper, et c'est passé inaperçu jusqu'à la
+  première connexion réelle. Le rattrapage ne voit que les fils **actifs**.
 - **Les tests tournent sur un vrai Postgres, jamais sur SQLite.** Deux étages : la
   logique d'ingestion en fonctions pures sur des dataclasses, sans base ; la couche SQL
   sur une instance réelle, une transaction annulée par test. `just test` saute l'étage 2
@@ -207,9 +213,14 @@ migrations elles-mêmes. Le raisonnement complet est en section 4 de la spec du 
   second constate que rien n'a survécu.
 - `migrated_database` est **synchrone**, et doit le rester : l'`env.py` d'Alembic appelle
   `asyncio.run`, qui lève depuis une boucle déjà en cours.
-- `tests/test_migrations_match_models.py` compare le DDL des modèles à celui des
-  migrations, tous deux rendus hors base. Un modèle changé sans migration échoue donc
-  dans la suite rapide, sans Docker. Il ne prouve pas que ce SQL s'exécute.
+- `tests/test_migrations_match_models.py` porte deux garde-fous de niveaux différents, et
+  la distinction compte : **hors base**, toute *table* décrite par un modèle doit être
+  créée par une migration — la dérive la plus courante, attrapée sans Docker ; le
+  contrôle **exact** est marqué `db` et demande à l'autogenerate d'Alembic ce qu'il
+  resterait à faire après `upgrade head`. Seul le second voit une colonne manquante. Ne
+  retentez pas de comparer du DDL rendu pour couvrir le second cas hors base : dès qu'une
+  migration fait un `ALTER TABLE`, les deux textes ne peuvent plus coïncider — c'est
+  précisément comme ça que la première version de ce test a été démentie.
 - `tests/factories.py` construit les records ; ne redéclarez pas un `an_event` local.
 
 `tests/conftest.py` applique automatiquement le marqueur `anyio` à toute fonction de test

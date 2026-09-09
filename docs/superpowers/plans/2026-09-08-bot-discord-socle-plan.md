@@ -78,8 +78,18 @@ de démarrer en accusant le portail à tort, et il aurait échoué en fermé —
 plus convaincante possible. C'est exactement ce que le `or` de
 `missing_privileged_intents` et son test couvraient.
 
-Reste dû, faute d'invitation au moment du test : **l'arrivée d'un message avec `content`
-non vide**. Le drapeau annonce l'intent actif, mais seul un contenu lu le prouve.
+**Étape 0 close le 2026-09-09.** Le bot invité, la sonde a lu une page réelle de
+`#💬︱général` : 100 messages, 95 d'auteurs humains, **95 porteurs de texte** — dont un de
+86 caractères. `MESSAGE_CONTENT` est donc actif en pratique et pas seulement en drapeau.
+La frontière tient sur de vrais objets : `HistorySource` a rendu 100 records, `created_at`
+revient en UTC aware, 16 réponses ont leur `reply_to_id`, les pièces jointes sont comptées,
+et `cursor_advance` a produit des bornes cohérentes.
+
+Un piège de diagnostic, noté parce qu'il reviendra : le premier message lu était **du bot
+lui-même et sans texte**, ce qui a fait conclure à tort « intent inactif ». La restriction
+`MESSAGE_CONTENT` ne s'applique jamais aux messages du bot, et un message peut n'avoir
+aucun texte. Un contrôle de cet intent doit porter sur un message **d'un humain**, et sur
+plusieurs.
 
 **Si ça casse** : la spec prévoit d'épingler le worker sur 3.13 dans sa propre image.
 Attention, l'arbitrage est plus coûteux qu'il n'y paraît — `requires-python` ne peut pas
@@ -167,12 +177,17 @@ exception ; `upgrade head` → `downgrade base` → `upgrade head` sur une base 
   Alembic.** Un `name="ck_bot_heartbeat_single_row"` explicite dans la migration
   ressortait en `ck_bot_heartbeat_ck_bot_heartbeat_single_row` : il faut donner le nom
   nu, comme le modèle.
-- **Un test referme un trou que la section 4 de la spec déclarait ouvert.** Les deux DDL
-  — celui des modèles via un mock engine, celui des migrations via le mode `--sql`
-  d'Alembic — se rendent hors base et se comparent. Un modèle modifié sans migration
-  échoue donc dans la suite rapide, sans Docker
-  (`tests/test_migrations_match_models.py`), et le test a été vérifié par mutation. Ce
-  qu'il ne prouve pas : que ce SQL s'exécute.
+- **Un test referme *une partie* du trou que la section 4 de la spec déclarait ouvert.**
+  La promesse notée ici le 2026-09-08 — « un modèle modifié sans migration échoue dans la
+  suite rapide » — était trop large, et la première migration faisant un `ALTER TABLE`
+  l'a démentie le lendemain : comparer le DDL rendu des deux côtés ne peut pas marcher
+  quand les modèles rendent une `CREATE TABLE` complète et les migrations une `CREATE`
+  suivie d'un `ALTER`. Du DDL rendu ne dit rien de l'état final d'un schéma.
+  `tests/test_migrations_match_models.py` porte donc deux garde-fous : hors base, **toute
+  table** décrite par un modèle doit être créée par une migration — la dérive la plus
+  courante, attrapée sans Docker ; et un contrôle exact marqué `db`, qui applique
+  l'historique puis demande à l'autogenerate d'Alembic ce qu'il resterait à faire. Seul
+  le second voit une colonne manquante.
 
 Même réserve qu'à l'étape 1 : les onze tests d'upsert sont écrits et **sautés**, faute
 de base. La migration n'a jamais été appliquée à un vrai Postgres — seulement rendue.
@@ -400,10 +415,36 @@ Ni vocal (morceau G), ni LLM (C, D, E), ni dashboard (B). `GET /api/ingest/statu
 point de recette, pas l'API du dashboard : le morceau B définira la sienne à partir de
 `daily_activity`.
 
+## Ce que la première connexion réelle a changé (2026-09-09)
+
+Une seule connexion à un vrai serveur a trouvé ce que sept étapes de tests n'avaient pas
+pu voir, et c'était un défaut de conception, pas un bug de frappe.
+
+**Les fils étaient traités de trois façons incohérentes.** Sur les 132 canaux d'Epoch
+Zéro — dont 10 lisibles par le bot — une partie des conversations vit dans des fils. Or
+`on_message` les ingérait sans faire la différence, `HistorySource` renvoyait une page
+vide pour un `Thread` à cause d'un `isinstance(..., TextChannel)`, et le rattrapage les
+excluait purement. Un fil était donc ingéré en temps réel, jamais rattrapé, et rien en
+base ne le distinguait d'un canal.
+
+Corrigé : les fils partagent la table `channel`, `is_thread` les distingue et `parent_id`
+dit sous quel canal ils pendent. Une table à part aurait fait pointer
+`message.channel_id` vers l'une de deux tables. `parent_id` n'est pas une clé étrangère,
+pour la raison qui vaut déjà pour `reply_to_id` : un fil peut être lisible alors que son
+canal parent ne l'est pas.
+
+Deux limites restent, écrites plutôt que découvertes plus tard : le rattrapage ne prend
+que les fils **actifs** (un fil archivé demande un appel paginé par canal, et ses messages
+sont déjà en base s'il était actif quand le worker tournait), et un salon **forum** n'est
+fait que de fils, donc entièrement invisible tant qu'aucun de ses fils n'est actif.
+
+La leçon générale, à garder pour les morceaux B à G : la couverture de tests du socle est
+bonne sur ce qu'elle décrit, et n'a rien dit sur ce que le domaine contenait en plus. Une
+connexion réelle, tôt, vaut mieux qu'une étape de tests supplémentaire.
+
 ## Points à trancher pendant l'implémentation, pas avant
 
-- Le repli 3.13 s'il reste nécessaire : deux toolchains ou tout le dépôt en arrière. La
-  moitié « bibliothèque » du risque étant levée, ce point ne se posera plus que si la
-  connexion gateway elle-même échoue sous 3.14 — nettement moins probable.
+- Le repli 3.13 : **le point est clos**, la connexion gateway fonctionne sous 3.14.
 - La timezone de `daily_activity.date` : UTC pour le socle, arbitrage définitif au
   morceau B, l'agrégat restant recalculable sur la fenêtre de rétention.
+- Les fils archivés et les salons forum, si un trou apparaît dans les statistiques.
