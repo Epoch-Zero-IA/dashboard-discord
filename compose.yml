@@ -23,6 +23,11 @@ services:
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       # The same key the guard on /api/hello checks against.
       API_KEY: ${API_KEY:?set API_KEY in .env (see .env.example)}
+      # Built here rather than taken from .env: inside the compose network the host is
+      # the service name, while DATABASE_URL in .env points at 127.0.0.1 for the tools
+      # that run on the host (alembic, pytest, `just dev-bot`). One variable for two
+      # different hosts is the mistake this split avoids.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dashboard}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}@db:5432/${POSTGRES_DB:-dashboard_discord}
     # No `ports`: the API is reachable only by web, over the compose network.
     expose:
       - "8000"
@@ -36,3 +41,62 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dashboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:-dashboard_discord}
+    # Published on purpose, and only here: the tests, alembic and `just dev-bot` run on
+    # the host, not in the network. compose.prod.yml publishes nothing.
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` and not a TCP probe: Postgres accepts connections seconds before
+      # it is ready to answer, and `depends_on: service_healthy` would let the API race
+      # it and lose.
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-dashboard} -d ${POSTGRES_DB:-dashboard_discord}
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    environment:
+      # Same fail-closed regime as API_KEY: a missing token must stop the deployment
+      # rather than start a worker that connects to nothing.
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env (see .env.example)}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dashboard}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}@db:5432/${POSTGRES_DB:-dashboard_discord}
+      MESSAGE_RETENTION_DAYS: ${MESSAGE_RETENTION_DAYS:-90}
+      NIGHTLY_HOUR_UTC: ${NIGHTLY_HOUR_UTC:-3}
+    # Waits for the API, which is what applies the migrations: the worker must never
+    # start against a schema it does not match.
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # Reads its own heartbeat from the database, not an HTTP port: that is the only
+      # check proving the process lives, the gateway is connected *and* Postgres
+      # answers. start_period covers the first beat.
+      test:
+        - CMD
+        - python
+        - -m
+        - bot.healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  pgdata:

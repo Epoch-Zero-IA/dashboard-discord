@@ -63,9 +63,19 @@ format:
     uv run ruff check --fix .
     pnpm -C frontend run format
 
+# With no database reachable the `db`-marked tests skip, with a message naming
+# `just db`, and the rest of the suite still runs.
+
 # Run the test suite with coverage.
 test:
     uv run pytest
+
+# What `just check` and the CI run: the gate before a push must not go green having
+# quietly run half of the suite. Needs `just db` locally; CI provides the service.
+
+# The same suite, an unreachable database being an error rather than a skip.
+test-with-db:
+    uv run pytest --require-db
 
 # Build the production frontend bundle into frontend/dist (no Python needed).
 build:
@@ -77,5 +87,52 @@ build:
 check-types: types
     git diff --exit-code openapi.json
 
-# Full gate before pushing (what CI runs): contract check + lint + tests.
-check: check-types lint test
+# Full gate before pushing (what CI runs): contract check + lint + tests, database included.
+check: check-types lint test-with-db
+
+# The tests, alembic and `just dev-bot` all run on the host and reach it over the
+# published port, so this is the one service worth starting by itself.
+
+# Start the Postgres service alone.
+db:
+    docker compose up -d db
+
+# Apply every pending migration to the database DATABASE_URL points at.
+migrate:
+    uv run alembic upgrade head
+
+# Autogenerate diffs against a live, already-migrated database — not against the
+# revision history — so `just db && just migrate` come first. Read the generated file
+# before committing it: autogenerate does not guess partial indexes.
+
+# Write a migration from the gap between the models and the database.
+migration m:
+    uv run alembic revision --autogenerate -m "{{m}}"
+
+# Needs DISCORD_TOKEN and both privileged intents enabled in the developer portal —
+# the worker refuses to start otherwise, on purpose.
+
+# The Discord worker alone, against the local database.
+dev-bot:
+    uv run python -m bot
+
+# `just dev` deliberately leaves the worker out, so that working on the frontend needs
+# no token and opens no real gateway connection.
+
+# The whole stack: API, frontend and worker.
+dev-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    just dev-api &
+    just dev-front &
+    just dev-bot &
+    wait
+
+# The catch-up on startup is budgeted so it does not hold the connection for an hour;
+# this is the same machinery with the budget removed. Resumable: it picks up at the
+# cursors, so an interrupted run costs at most one page.
+
+# Import the history of every readable channel, to completion, then exit.
+backfill:
+    uv run python -m bot backfill

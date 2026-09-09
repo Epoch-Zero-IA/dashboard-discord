@@ -2,18 +2,32 @@
 name = "dashboard-discord"
 version = "0.1.0"
 requires-python = ">=3.14"
+# Shared by every process. `core/` owns the schema and depends on neither Litestar nor
+# discord.py, so these are the only dependencies both halves need. Litestar sits in the
+# `api` group and discord.py in `bot`: each image installs one of them and therefore
+# never carries the other's stack.
 dependencies = [
-    "jinja2>=3.1.6",
-    "litestar>=2.24.0",
-    "litestar-vite>=0.31.0",
-    "markupsafe>=3.0.3",
+    "advanced-alchemy>=1.11.0",
+    "alembic>=1.19.2",
+    "asyncpg>=0.31.0",
     "python-dotenv>=1.2.3",
-    "litestar-granian>=0.16.0",
+    "sqlalchemy>=2.0.52",
     "structlog>=26.1.0",
 ]
 
 [dependency-groups]
+api = [
+    "jinja2>=3.1.6",
+    "litestar>=2.24.0",
+    "litestar-granian>=0.16.0",
+    "litestar-vite>=0.31.0",
+    "markupsafe>=3.0.3",
+]
+bot = [
+    "discord-py>=2.7",
+]
 dev = [
+    "anyio>=4.15.1",
     "commitizen>=4.18.0",
     "prek>=0.5.1",
     "pyrefly>=1.2.0",
@@ -22,16 +36,36 @@ dev = [
     "ruff>=0.16.5",
 ]
 
+# Development wants every group; the images want one each. `uv sync` therefore installs
+# all three here, while Dockerfile.api passes `--no-default-groups --group api` and
+# Dockerfile.bot `--no-default-groups --group bot`. Dropping this section would leave
+# `uv run litestar` without Litestar.
+[tool.uv]
+default-groups = ["dev", "api", "bot"]
+
 [tool.pytest.ini_options]
-# Register the `anyio` marker, else pytest warns `Unknown pytest.mark.anyio`
-markers = ["anyio"]
+# `anyio`: registered, else pytest warns `Unknown pytest.mark.anyio`.
+# `db`: the tests that need a real Postgres. Skipped with a message naming `just db`
+# when none is reachable; `just check` refuses to pass on skipped ones, because a test
+# silently skipped is a test that does not exist. See tests/conftest.py.
+markers = ["anyio", "db"]
+
+# Collect from tests/ only. Without this, pytest crawls the whole repo from the rootdir
+# and picks up anything named test_*.py — including a stray second checkout of the
+# project, which then collides with the real tests/ on module basenames.
+testpaths = ["tests"]
 
 # Add repo root to sys.path, else `pytest` fails with `ModuleNotFoundError: No module named 'backend'`
 pythonpath = ["."]
 
-# Measure coverage of the `backend` package on every run; `term-missing` prints the
+# Measure coverage of the first-party packages on every run; `term-missing` prints the
 # uncovered line numbers so gaps are visible without opening an HTML report.
-addopts = ["--cov=backend", "--cov-report=term-missing"]
+addopts = [
+    "--cov=backend",
+    "--cov=core",
+    "--cov=bot",
+    "--cov-report=term-missing",
+]
 
 # Silence third-party noise: rich_click 1.9.8 (pulled in by litestar) uses click APIs
 # deprecated in click 9.0. Not our code and nothing to bump, so ignore it.
@@ -40,7 +74,13 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["backend"]
+source = ["backend", "core", "bot"]
+
+# Migrations are not application code: each one runs once, in one direction, and
+# counting them would sink the figure a little further with every revision. The
+# harness still executes them — `alembic upgrade head` is how the test database gets
+# its schema — and tests/test_migrations_match_models.py checks their content.
+omit = ["core/migrations/*"]
 
 [tool.coverage.report]
 # TYPE_CHECKING blocks and the `if __name__ == "__main__"` guard never run under tests.
@@ -54,4 +94,4 @@ exclude_also = [
 # makes the type-checking half of `just lint` worth anything. `pyrefly dump-config`
 # prints the files actually covered.
 [tool.pyrefly]
-project-includes = ["backend", "tests"]
+project-includes = ["backend", "core", "bot", "tests"]

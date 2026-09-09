@@ -1,0 +1,38 @@
+# Worker image: core/ + bot/ and the `bot` dependency group. No Litestar, no nginx, no
+# frontend — the three services deploy and scale on their own, and this one never
+# scales past a single replica (see compose.prod.yml for why).
+FROM debian:bookworm-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# The managed CPython lands in /python so the final stage can copy it.
+ENV UV_PYTHON_INSTALL_DIR=/python UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_COMPILE_BYTECODE=1 UV_PYTHON=3.14
+
+WORKDIR /app
+# Dependencies alone first: application code changes far more often than they do,
+# so this layer stays cached.
+COPY pyproject.toml uv.lock ./
+# `--no-default-groups --group bot`: without it the image would also install the `api`
+# group and carry Litestar, which this process never imports. A test locks that
+# boundary down (tests/test_package_boundaries.py).
+RUN uv sync --frozen --no-default-groups --group bot
+
+FROM debian:bookworm-slim AS runtime
+
+RUN useradd -m -u 10001 app
+
+COPY --from=builder --chown=app:app /python /python
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+# core/ owns the schema and ships in both images; bot/ is this one's own code.
+COPY --chown=app:app core /app/core
+COPY --chown=app:app bot /app/bot
+
+ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONUNBUFFERED=1
+
+USER app
+WORKDIR /app
+
+# No EXPOSE and no port: the worker listens to the Discord gateway, and its health is
+# read from the database by `python -m bot.healthcheck` (wired in compose).
+CMD ["python", "-m", "bot"]

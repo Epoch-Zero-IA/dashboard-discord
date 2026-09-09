@@ -5,8 +5,10 @@
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](.python-version)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-Tableau de bord Discord, avec le backend Python et le frontend Vite découplés : deux
-images Docker, deux cycles de déploiement, deux dimensionnements.
+Agent Discord de gestion de serveur et son tableau de bord. Quatre services : nginx qui
+sert le bundle, une API Litestar, un worker connecté à la gateway Discord, et Postgres.
+Le backend Python et le frontend Vite sont découplés — images, cycles de déploiement et
+dimensionnements séparés.
 
 Le contrat entre les deux est `openapi.json`, versionné à la racine. Le backend
 l'exporte depuis ses handlers, le frontend en dérive ses types TypeScript sans avoir
@@ -14,21 +16,39 @@ besoin de Python. En production, nginx sert le bundle et proxifie `/api` vers
 Litestar : une seule origine côté navigateur, donc pas de CORS ni d'URL d'API dans
 le bundle.
 
-Litestar 2.24, Svelte 5, Vite 8, Tailwind 4, nginx, pnpm, uv.
+Le worker Discord est un **service à part**, et il tourne en **un seul réplica,
+définitivement** : deux instances connectées à la même gateway traiteraient chaque
+message deux fois. C'est aussi ce qui permet à ses jobs planifiés (heartbeat,
+agrégation et purge nocturnes) de vivre dans son process, sans verrou distribué.
+
+Litestar 2.24, discord.py 2.7, SQLAlchemy 2 + Alembic, Postgres 18, Svelte 5, Vite 8,
+Tailwind 4, nginx, pnpm, uv.
 
 ## Structure
 
 ```
+core/             propriétaire du schéma — ni Litestar ni discord.py
+  models.py       les tables ; les snowflakes Discord sont les clés primaires
+  upserts.py      toutes les écritures, idempotentes par construction
+  queries.py      les lectures
+  aggregation.py  agrégation quotidienne et purge de rétention
+  records.py      dataclasses plates : le contrat entre Discord et la base
+  migrations/     révisions Alembic
 backend/          application Litestar — sert /api, rien d'autre
-  __init__.py     chemins du projet
   app.py          handlers et configuration des plugins
+  ingest.py       GET /api/ingest/status
+bot/              le worker Discord
+  adapters.py     la frontière : objets discord.py vers records
+  runner.py       le client gateway, ses handlers et ses jobs
+  catchup.py      backfill et trou de gateway, une seule machine
+  nightly.py      le job nocturne : agréger puis purger
+  failures.py     panne de base ou bug maison — le fast fail en dépend
 frontend/         projet Vite (racine Vite)
-  src/            sources Svelte
   src/generated/  client TypeScript généré (non versionné)
-  dist/           bundle de production (non versionné)
-deploy/nginx.conf reverse proxy : bundle + /api sur une seule origine
+deploy/           nginx, et l'entrypoint qui applique les migrations
 openapi.json      contrat d'API versionné, exporté depuis les handlers
-Dockerfile.api    image de l'API (Python seul)
+Dockerfile.api    image de l'API (Python, sans discord.py)
+Dockerfile.bot    image du worker (Python, sans Litestar)
 Dockerfile.web    image du frontend (bundle Vite + nginx)
 justfile          raccourcis des tâches courantes
 ```
@@ -38,6 +58,11 @@ justfile          raccourcis des tâches courantes
 Il faut [uv](https://docs.astral.sh/uv/), [pnpm](https://pnpm.io/) et Node `^20.19`
 ou `>=22.12`, contrainte de Vite 8. [`just`](https://github.com/casey/just) est
 recommandé (`uv tool install rust-just`) mais facultatif.
+
+Il faut aussi **Docker**, et pas seulement pour déployer : Postgres tourne dedans en
+développement (`just db`), et les tests marqués `db` — un bon tiers de la suite —
+l'exigent. `just check`, la porte avant push, échoue sans base plutôt que de sauter ces
+tests en silence.
 
 ```bash
 cp .env.example .env
@@ -53,7 +78,10 @@ uv run litestar assets install
 
 Ne sautez pas la copie du `.env` : il définit `LITESTAR_APP`. Sans lui, la CLI
 cherche l'application à la racine et ne la trouve pas, puisque le code est dans
-`backend/`.
+`backend/`. Trois valeurs y sont à remplir avant de démarrer quoi que ce soit :
+`API_KEY`, `POSTGRES_PASSWORD` et `DISCORD_TOKEN` — les deux dernières bloquent
+`docker compose up` si elles manquent, et le worker refuse de démarrer sans la
+troisième.
 
 ## Commandes
 
@@ -61,13 +89,20 @@ Les tâches courantes passent par `just` ; `just` seul liste les recettes.
 
 | Commande | Effet |
 |----------|-------|
+| `just db` | démarre Postgres seul (prérequis des tests marqués `db`) |
 | `just dev` | lance l'API (:8000) et le frontend (:5173) ensemble |
 | `just dev-api` | l'API seule, en rechargement à chaud |
 | `just dev-front` | le frontend seul, avec HMR |
+| `just dev-bot` | le worker Discord seul |
+| `just dev-all` | les trois à la fois |
+| `just migrate` | applique les migrations en attente |
+| `just migration m="…"` | écrit une migration depuis l'écart modèles / base |
+| `just backfill` | importe tout l'historique lisible, puis sort |
 | `just types` | exporte `openapi.json` et régénère le client TypeScript |
 | `just lint` | ruff + pyrefly (Python), eslint + prettier + svelte-check (frontend) |
 | `just format` | formate et corrige (ruff côté Python, prettier + eslint côté frontend) |
-| `just test` | pytest avec couverture |
+| `just test` | pytest ; les tests marqués `db` sont sautés sans base |
+| `just test-with-db` | la même suite, base exigée |
 | `just build` | bundle de production du frontend |
 | `just check` | tout : contrat + lint + tests (ce que lance la CI) |
 
@@ -95,12 +130,73 @@ Si quelque chose cloche dans la configuration :
 uv run litestar assets doctor
 ```
 
+## Le worker Discord
+
+Avant toute chose, deux réglages **manuels** dans le portail développeur Discord, sous
+*Bot > Privileged Gateway Intents* : activez `MESSAGE CONTENT INTENT` et `SERVER MEMBERS
+INTENT`. Sans eux, Discord livre des messages au contenu vide et ne signale pas les
+arrivées de membres — sans erreur, sans avertissement. C'est le pire mode d'échec du
+projet, donc le worker vérifie ses intents au démarrage et **refuse de démarrer** s'ils
+manquent, en nommant la case à cocher.
+
+Puis mettez le token dans `.env` (`DISCORD_TOKEN=`), invitez le bot sur le serveur, et :
+
+```bash
+just db          # Postgres
+just migrate     # le schéma
+just dev-bot     # le worker
+```
+
+Le worker ingère en temps réel et, à la connexion, comble le trou laissé par son arrêt.
+Backfill initial et trou de gateway sont la même machine : elle avance par pages de cent
+messages, un canal à la fois, et écrit son curseur avec chaque page — une interruption ne
+coûte donc jamais plus d'une page. Le rattrapage au démarrage est limité à vingt pages
+par canal pour ne pas retenir la connexion ; `just backfill` fait le reste sans limite.
+
+Sa santé se lit dans la base, pas sur un port : un heartbeat toutes les trente secondes,
+que le healthcheck de compose interroge avec `python -m bot.healthcheck`. C'est le seul
+contrôle qui prouve à la fois que le process vit, que la gateway est connectée et que
+Postgres répond.
+
+**Si Postgres devient injoignable, le worker sort en code non nul.** Il ne met rien en
+tampon mémoire : l'orchestrateur le redémarre et le rattrapage par curseurs recomble le
+trou, exactement comme après un redéploiement. Un bug de notre côté, lui, est loggué
+sans tuer le process — la distinction est dans `bot/failures.py`.
+
+## Base de données
+
+Postgres, avec les identifiants Discord (des snowflakes 64 bits) comme clés primaires.
+Il n'y a donc aucune clé de substitution, et **toute écriture est un upsert** : réingérer
+le même message est indiscernable de l'avoir ingéré une fois.
+
+Deux tables méritent d'être connues :
+
+- `message` garde le contenu. Une suppression **vide le contenu et conserve la ligne** :
+  la suppression demandée par le membre est honorée, la statistique reste juste.
+- `daily_activity` agrège par jour, canal et auteur. Un job nocturne l'alimente puis
+  purge `message` au-delà de `MESSAGE_RETENTION_DAYS` (90 par défaut). L'agrégat survit
+  indéfiniment : le tableau de bord garde son historique sans garder les conversations.
+
+La purge ne supprime **jamais** un jour qui n'a pas déjà été agrégé. C'est la seule règle
+du projet dont la violation serait irréversible, et elle est vérifiée en base, pas
+laissée à la vigilance de l'appelant.
+
+Les migrations s'appliquent toutes seules au déploiement, dans l'entrypoint de l'image
+`api` — un seul migrateur, avant que Granian ne démarre. En local, `just migrate`.
+
+`GET /api/ingest/status` (protégé par la clé d'API) répond où en est l'ingestion : par
+canal, les curseurs, l'état de complétion, le nombre de messages, et la date du dernier
+heartbeat du worker.
+
 ## Docker
 
-Deux images, chacune buildable sans l'autre :
+Trois images, chacune buildable sans les autres, et un Postgres officiel :
 
-- `Dockerfile.api` — Python seul, sans Node ni outils de build. Ne contient que
-  l'interpréteur, le venv et `backend/`, sous un utilisateur non privilégié.
+- `Dockerfile.api` — Python seul, sans Node ni outils de build. L'interpréteur, le venv,
+  `backend/` et `core/`, sous un utilisateur non privilégié. **C'est cette image qui
+  applique les migrations**, dans son entrypoint, avant de démarrer Granian.
+- `Dockerfile.bot` — le worker : `core/` et `bot/`, sans Litestar. Aucun port ouvert ;
+  sa santé se lit dans la base, pas sur une socket.
 - `Dockerfile.web` — étage Node qui dérive les types de `openapi.json` et build le
   bundle, puis nginx sans privilèges qui le sert.
 
@@ -108,9 +204,14 @@ Deux images, chacune buildable sans l'autre :
 docker compose up --build
 ```
 
-L'app répond sur http://127.0.0.1:8000, servie par nginx. L'API n'est pas exposée
-sur l'hôte : seul `web` l'atteint, par le réseau interne de compose. Le service
-`web` attend que le healthcheck de `api` passe avant de démarrer.
+L'app répond sur http://127.0.0.1:8000, servie par nginx. L'API n'est pas exposée sur
+l'hôte : seul `web` l'atteint, par le réseau interne de compose. Les dépendances sont
+chaînées par healthcheck — `db` avant `api`, `api` (qui migre) avant `bot`, `api` avant
+`web` — donc un `docker compose up` sain signifie que le schéma est à jour et que le
+worker est connecté.
+
+Seul Postgres publie un port en développement (5432), parce que les tests, Alembic et
+`just dev-bot` tournent sur l'hôte. `compose.prod.yml` ne publie rien du tout.
 
 ### Coolify
 
@@ -243,10 +344,22 @@ Le lint, le typage et les tests couvrent backend et frontend d'un seul point :
 ```bash
 just lint             # ruff, pyrefly, eslint, prettier, svelte-check
 just test             # pytest + couverture
+just test-with-db     # la même suite, base exigée
 ```
 
 Les mêmes vérifications tournent à chaque commit via [prek](https://github.com/j178/prek)
 (ou pre-commit) — lancez `prek install` une fois — et dans la CI GitHub Actions.
+
+**Les tests ne tournent pas sur SQLite.** Deux étages : les fonctions pures d'un côté,
+sans base ni réseau ; de l'autre, tout ce qui parle SQL, sur un vrai Postgres. C'est là
+que vivent les propriétés qu'un moteur de substitution n'aurait pas exercées — `ON
+CONFLICT` sur clé composite, timestamps avec fuseau, index partiels, et les migrations
+elles-mêmes.
+
+`just test` saute le second étage avec un message nommant `just db`, pour que travailler
+sans Docker reste possible. `just check` — la porte avant push, et ce que lance la CI —
+l'**exige** : une porte qui passe au vert en ayant testé la moitié de la suite ne garde
+rien.
 
 ## Développement
 
