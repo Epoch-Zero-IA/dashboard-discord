@@ -411,9 +411,24 @@ mode du contexte : sans le bit exécutable, l'`ENTRYPOINT` échoue au premier d�
   `postgres:18-alpine` et `TEST_DATABASE_URL` y rendent les tests marqués `db` exigés :
   c'est ce run qui appliquera la migration et lancera les 32 tests que l'environnement
   local ne pouvait pas lancer. Attendez-vous à y corriger quelque chose.
-- Reste à vérifier à la main, comme le prévoyait le plan : que l'entrypoint tourne bien
-  **une fois** et non une fois par worker avec `WEB_CONCURRENCY > 1`, et que Coolify
-  reprenne le passage de deux à quatre services, volume `pgdata` compris.
+**Vérifié le 2026-09-09, sans Docker.** Docker ne peut pas tourner dans l'environnement
+de développement (conteneur non privilégié, pas de root, pas de socket hôte monté, ni
+`newuidmap` ni `fuse-overlayfs` pour le mode rootless). Mais quatre morceaux du
+déploiement ne dépendent pas d'un daemon, et ils passent :
+
+- `sh -n deploy/api-entrypoint.sh` : syntaxe valide.
+- `python -m bot` sans `DISCORD_TOKEN` → **code 2**, et le log JSON nomme la variable
+  sans jamais citer sa valeur. Idem sans `DATABASE_URL`.
+- `alembic upgrade head` sur une base vierge applique les deux révisions dans l'ordre.
+- `python -m bot.healthcheck`, la commande exacte du healthcheck compose : **code 0** avec
+  un heartbeat frais, **code 1** avec un heartbeat de cinq minutes, **code 1** sans base.
+  Toute l'histoire de santé du service `bot` tient là.
+
+Reste donc strictement ce qui exige un daemon : la construction des trois images,
+l'exécution réelle de l'entrypoint dans le conteneur — dont le fait qu'il tourne **une
+fois** et non une fois par worker avec `WEB_CONCURRENCY > 1` —, l'enchaînement des
+`depends_on` par healthcheck, et la reprise par Coolify du passage de deux à quatre
+services, volume `pgdata` compris.
 
 ## Découpage en branches
 

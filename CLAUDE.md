@@ -21,8 +21,12 @@ Deux passes consécutives laissent toutes les tables à zéro ligne.
 
 Deux réserves subsistent, mineures mais réelles : la vérification s'est faite sur
 **Postgres 16**, alors que les composes déclarent 18 — la CI, elle, tourne bien sur 18 ;
-et rien de tout cela ne teste le déploiement lui-même (images, entrypoint de migration,
-healthchecks), qui n'a jamais été construit.
+et le déploiement n'est vérifié que par morceaux — Docker ne peut pas tourner dans cet
+environnement (conteneur non privilégié, pas de root, pas de socket hôte). Ce qui a pu
+l'être sans daemon l'a été : syntaxe de l'entrypoint, les deux sorties en code 2 du
+worker mal configuré, `alembic upgrade head` sur une base vierge, et
+`python -m bot.healthcheck` qui rend 0 sur un heartbeat frais et 1 sur un heartbeat de
+cinq minutes. Restent la construction des images et l'enchaînement réel des healthchecks.
 
 **Lire `docs/superpowers/specs/2026-09-08-bot-discord-socle-design.md` avant de toucher
 au code.** Le document porte le découpage complet, les décisions déjà prises et leurs
