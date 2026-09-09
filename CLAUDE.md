@@ -16,7 +16,7 @@ le contrôle devait absolument accepter — et une page de cent messages a été
 convertie en records, contenu compris.
 
 **Ce qui reste dû, et que rien ne remplace : la migration n'a jamais été appliquée à un
-vrai Postgres**, et les 32 tests marqués `db` sont écrits et sautés. `just db && just
+vrai Postgres**, et les 35 tests marqués `db` sont écrits et sautés. `just db && just
 check` sur une machine avec Docker est ce qui les lève. Tant que ce n'est pas fait,
 considérez la couche SQL comme non exécutée.
 
