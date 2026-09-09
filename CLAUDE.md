@@ -9,11 +9,15 @@ indépendants, chacun avec sa propre spec. **Le morceau A — le socle : worker 
 schéma Postgres, ingestion, rattrapage, jobs nocturnes — est écrit** (branche
 `feature/core-schema`). Les morceaux B à G ne sont pas commencés.
 
-Deux vérifications du socle restent dues, et rien ne les remplace : **aucune connexion
-gateway n'a jamais été ouverte** (il faut un `DISCORD_TOKEN` et un serveur de test), et
-**la migration n'a jamais été appliquée à un vrai Postgres** — les 32 tests marqués `db`
-sont écrits et sautés. `just db && just check` sur une machine avec Docker est ce qui
-lève les deux. Tant que ce n'est pas fait, considérez la couche SQL comme non exécutée.
+La connexion gateway est vérifiée (2026-09-09) : `discord.py` tourne sous CPython 3.14
+et le contrôle des intents passe sur la configuration réelle — où Discord n'expose les
+deux intents privilégiés que sur ses drapeaux `_limited`, le cas que le contrôle devait
+absolument accepter.
+
+**Ce qui reste dû, et que rien ne remplace : la migration n'a jamais été appliquée à un
+vrai Postgres**, et les 32 tests marqués `db` sont écrits et sautés. `just db && just
+check` sur une machine avec Docker est ce qui les lève. Tant que ce n'est pas fait,
+considérez la couche SQL comme non exécutée.
 
 **Lire `docs/superpowers/specs/2026-09-08-bot-discord-socle-design.md` avant de toucher
 au code.** Le document porte le découpage complet, les décisions déjà prises et leurs

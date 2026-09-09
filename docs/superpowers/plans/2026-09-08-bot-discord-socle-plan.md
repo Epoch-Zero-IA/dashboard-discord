@@ -57,9 +57,29 @@ Vérifié dans un projet jetable hors du dépôt, sous CPython **3.14.7** :
   stdlib en 3.13 : la bibliothèque a donc déjà traité les suppressions de ce genre.
 - `discord.Client(intents=...)` se construit avec `message_content` et `members` activés.
 
-Reste à vérifier, et seul un token peut le faire : **l'ouverture réelle de la connexion
-gateway** et l'arrivée d'un message avec `content` non vide. C'est la moitié qui valide
-les prérequis du portail, pas la bibliothèque.
+**Connexion gateway vérifiée le 2026-09-09**, avec un token réel et une sonde jetable
+hors du dépôt. Le websocket s'ouvre sous CPython 3.14.7, `on_ready` se déclenche,
+`application_info()` répond : **le risque technique n° 1 de la spec est clos.**
+
+Et la configuration réelle a confirmé le piège des deux drapeaux, ce qui n'était jusque-là
+qu'une lecture de `dir()` :
+
+```
+message_content         : False
+message_content_limited : True
+guild_members           : False
+guild_members_limited   : True
+=> contrôle de démarrage du worker : PASSE
+```
+
+Les deux intents sont bien activés dans le portail, et Discord ne les expose **que** sur
+les drapeaux `_limited`. Un contrôle lisant les seuls drapeaux validés aurait donc refusé
+de démarrer en accusant le portail à tort, et il aurait échoué en fermé — de la façon la
+plus convaincante possible. C'est exactement ce que le `or` de
+`missing_privileged_intents` et son test couvraient.
+
+Reste dû, faute d'invitation au moment du test : **l'arrivée d'un message avec `content`
+non vide**. Le drapeau annonce l'intent actif, mais seul un contenu lu le prouve.
 
 **Si ça casse** : la spec prévoit d'épingler le worker sur 3.13 dans sa propre image.
 Attention, l'arbitrage est plus coûteux qu'il n'y paraît — `requires-python` ne peut pas
