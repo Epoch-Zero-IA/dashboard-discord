@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from backend.app import app
 from backend.security import API_KEY_ENV_VAR
+from core import models  # noqa: F401  (populates the metadata used to truncate)
 from core.config import DATABASE_URL_ENV_VAR, MisconfiguredError, harness_database_url
-from core.db import create_engine
+from core.db import create_engine, metadata
 
 TEST_API_KEY = "test-api-key"
 # Where the application points when no test database is configured. Never connected to:
@@ -123,6 +124,21 @@ async def _probe(url: str) -> None:
         await engine.dispose()
 
 
+async def _truncate_everything(url: str) -> None:
+    """Empty every table of the schema, keeping the schema itself.
+
+    Args:
+        url: The connection URL of the test database.
+    """
+    tables = ", ".join(table.name for table in metadata.sorted_tables)
+    engine = create_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(f"TRUNCATE TABLE {tables} CASCADE"))
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture(scope="session")
 def migrated_database(request: pytest.FixtureRequest) -> str:
     """Return the URL of a reachable, fully migrated test database.
@@ -151,6 +167,12 @@ def migrated_database(request: pytest.FixtureRequest) -> str:
     config = Config(PROJECT_ROOT / "alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
+
+    # The suite assumes it starts from an empty database, and a developer's local test
+    # database may hold rows an older, leakier harness committed. Truncating once per
+    # session makes that assumption true instead of hoped for; in CI the database is
+    # fresh anyway, so this costs one statement.
+    asyncio.run(_truncate_everything(url))
     return url
 
 
@@ -170,32 +192,55 @@ async def db_engine(migrated_database: str) -> AsyncIterator[AsyncEngine]:
 
 
 @pytest.fixture
-async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    """Yield a session whose every write is rolled back when the test ends.
+async def db_sessions(
+    db_engine: AsyncEngine,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Yield a session *factory* whose every write is rolled back when the test ends.
 
-    The session is bound to an already-open connection holding a transaction, and
+    The factory is bound to an already-open connection holding a transaction, and
     `join_transaction_mode="create_savepoint"` makes the code under test commit into a
-    savepoint instead of the real transaction. Without that argument a `commit()` in
-    the code under test commits for good and the tests contaminate each other in an
-    order that is painful to reproduce — which is why two tests in
-    tests/test_db_harness.py exist solely to prove it.
+    savepoint instead of the real transaction. Without that argument a `commit()` in the
+    code under test commits for good and the tests contaminate each other in an order
+    that is painful to reproduce — which is why two tests in tests/test_db_harness.py
+    exist solely to prove it.
 
-    Note this factory is not `core.db.create_session_factory`: production binds the
-    engine, the harness binds a connection. That is the whole difference.
+    **Ask for this fixture, not for `db_engine`, whenever the code under test needs a
+    factory** — `catch_up_channel` and `run_nightly` both do, since they open one session
+    per page and per day. Building a factory on `db_engine` instead bypasses the
+    rollback entirely and commits for real: that mistake made nineteen tests fail on the
+    first run against a real Postgres, all of them by reading rows another test had left
+    behind.
+
+    Note this is not `core.db.create_session_factory`: production binds the engine, the
+    harness binds a connection. That is the whole difference.
 
     Args:
         db_engine: The session-scoped engine.
 
     Yields:
-        A session on a doomed transaction.
+        A factory whose sessions share one doomed transaction.
     """
     async with db_engine.connect() as connection:
         transaction = await connection.begin()
-        factory = async_sessionmaker(
+        yield async_sessionmaker(
             bind=connection,
             expire_on_commit=False,
             join_transaction_mode="create_savepoint",
         )
-        async with factory() as session:
-            yield session
         await transaction.rollback()
+
+
+@pytest.fixture
+async def db_session(
+    db_sessions: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """Yield one session on the doomed transaction, for the tests that want just one.
+
+    Args:
+        db_sessions: The rolled-back factory.
+
+    Yields:
+        A session.
+    """
+    async with db_sessions() as session:
+        yield session

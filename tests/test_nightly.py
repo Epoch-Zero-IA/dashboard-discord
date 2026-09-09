@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot.nightly import days_to_purge, run_nightly
 from core.aggregation import (
@@ -227,14 +227,14 @@ async def test_the_oldest_day_is_read_from_the_messages(
 
 @pytest.mark.db
 async def test_a_nightly_run_aggregates_then_purges_past_retention(
-    db_engine: AsyncEngine,
+    db_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """End to end, with a retention window of two days.
 
     The old message goes, its count stays, and yesterday's message is untouched — the
     three properties the dashboard depends on.
     """
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = db_sessions
     old_day = TODAY - dt.timedelta(days=10)
     async with factory() as session:
         await _ingest(session, message_id=1, day=old_day, content="ancien")

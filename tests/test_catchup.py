@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot.catchup import (
     Direction,
@@ -166,11 +166,11 @@ class FakeHistory:
 
 @pytest.mark.db
 async def test_a_backfill_walks_the_whole_channel_and_stops(
-    db_engine: AsyncEngine,
+    db_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """Every message once, no duplicates, and the cursor left marked complete."""
     history = FakeHistory([1, 2, 3, 4, 5, 6, 7])
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = db_sessions
 
     ingested = await catch_up_channel(
         factory, history, CHANNEL_ID, Direction.BACKWARD, page_size=PAGE
@@ -188,7 +188,7 @@ async def test_a_backfill_walks_the_whole_channel_and_stops(
 
 @pytest.mark.db
 async def test_a_backfill_resumes_where_it_was_interrupted(
-    db_engine: AsyncEngine,
+    db_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """One page at a time, then a resume: no gap, no duplicate.
 
@@ -196,7 +196,7 @@ async def test_a_backfill_resumes_where_it_was_interrupted(
     backfill costs the page in flight and nothing else.
     """
     history = FakeHistory([1, 2, 3, 4, 5, 6, 7])
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = db_sessions
 
     first = await catch_up_channel(
         factory, history, CHANNEL_ID, Direction.BACKWARD, page_size=PAGE, max_pages=1
@@ -213,11 +213,11 @@ async def test_a_backfill_resumes_where_it_was_interrupted(
 
 @pytest.mark.db
 async def test_replaying_a_finished_backfill_fetches_nothing(
-    db_engine: AsyncEngine,
+    db_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """Idempotent, and cheap: a completed cursor asks Discord for nothing at all."""
     history = FakeHistory([1, 2, 3])
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = db_sessions
     await catch_up_channel(
         factory, history, CHANNEL_ID, Direction.BACKWARD, page_size=PAGE
     )
@@ -232,9 +232,11 @@ async def test_replaying_a_finished_backfill_fetches_nothing(
 
 
 @pytest.mark.db
-async def test_a_gap_is_filled_forward_from_the_cursor(db_engine: AsyncEngine) -> None:
+async def test_a_gap_is_filled_forward_from_the_cursor(
+    db_sessions: async_sessionmaker[AsyncSession],
+) -> None:
     """The gateway-gap case, on the same machinery as the backfill."""
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = db_sessions
     await catch_up_channel(
         factory, FakeHistory([1, 2, 3]), CHANNEL_ID, Direction.BACKWARD, page_size=PAGE
     )
