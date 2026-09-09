@@ -1,84 +1,68 @@
-"""Catches the gap between the models and the migrations, without a database.
+"""Deux garde-fous contre la dérive entre les modèles et les migrations.
 
-Section 4 of the spec listed this as an accepted blind spot: the harness migrates a real
-Postgres, so a model changed without a matching migration is only caught by tests that
-need a database, and `just test` would pass. It turns out both sides can be rendered to
-SQL offline — the models through a mock engine, the migrations through Alembic's `--sql`
-mode — and compared. So the blind spot is closed for the cheap half of the problem: a
-missing or divergent migration now fails the fast suite.
+Le premier est **hors base** : il vérifie que chaque table décrite par les modèles est
+bien créée par une migration. C'est le cas de dérive le plus courant — un modèle ajouté
+sans sa révision — et il est attrapé par `just test`, sans Docker.
 
-What this does *not* prove is that the SQL runs. Only a real Postgres does that, which
-is still the job of the `db`-marked tests.
+Le second est **exact, et exige une base**. Il applique l'historique complet puis demande
+à l'autogenerate d'Alembic ce qu'il resterait à faire : la réponse doit être « rien ».
+C'est le seul niveau qui voit une colonne, un type ou une contrainte manquants.
+
+La première version de ce fichier comparait le DDL rendu des deux côtés, en croyant
+couvrir le second cas hors base. Ça n'a tenu que le temps de la première migration
+faisant un `ALTER TABLE` : les modèles rendent une seule `CREATE TABLE` complète, la
+migration une `CREATE TABLE` d'origine suivie d'un `ALTER`, et les deux textes ne peuvent
+pas coïncider. Comparer du DDL rendu ne dit rien de l'état final d'un schéma.
 """
 
 import re
 from io import StringIO
 from pathlib import Path
 
+import pytest
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
-from sqlalchemy import create_mock_engine
+from alembic.runtime.migration import MigrationContext
+from sqlalchemy import Connection, create_mock_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from core import models  # noqa: F401  (imported for its side effect on the metadata)
 from core.db import metadata
 
 PROJECT_ROOT = Path(__file__).parents[1]
-# Never connected to: both renderings are offline. The dialect is what matters, since it
+# Never connected to: the offline rendering only needs a dialect, and the dialect is what
 # decides how a partial index or a timestamptz comes out.
 DIALECT_URL = "postgresql+asyncpg://unused:unused@127.0.0.1:5432/unused"
 # Alembic's own bookkeeping table is not part of the schema we design.
 IGNORED_TABLE = "alembic_version"
 
 
-def _statements(sql: str) -> set[str]:
-    """Reduce a SQL script to its comparable CREATE statements.
-
-    Whitespace is collapsed and statements are returned as a set: the two renderings
-    emit the same objects in a different order, and ordering carries no meaning for a
-    schema.
+def _created_tables(sql: str) -> set[str]:
+    """Return the names of the tables a SQL script creates.
 
     Args:
         sql: A SQL script.
 
     Returns:
-        One normalised string per CREATE TABLE or CREATE INDEX.
+        One name per CREATE TABLE.
     """
-    found: set[str] = set()
-    for raw in sql.split(";"):
-        # Comments go before the whitespace is collapsed, not after. Offline mode
-        # prefixes the first statement with `-- Running upgrade`, and once the newlines
-        # are gone there is no way to tell where the comment ended — a `--[^\n]*`
-        # pattern then eats the statement it was meant to precede.
+    found = set()
+    for statement in sql.split(";"):
+        # Comments go before the whitespace is collapsed: offline mode prefixes the
+        # first statement with `-- Running upgrade`, and once the newlines are gone a
+        # `--[^\n]*` pattern would eat the statement it was meant to precede.
         body = " ".join(
-            line for line in raw.splitlines() if not line.strip().startswith("--")
+            line for line in statement.splitlines() if not line.strip().startswith("--")
         )
-        collapsed = re.sub(r"\s+", " ", body).strip()
-        if not re.match(r"CREATE (TABLE|INDEX)", collapsed, flags=re.IGNORECASE):
-            continue
-        if IGNORED_TABLE in collapsed:
-            continue
-        found.add(collapsed.replace(" ,", ","))
+        match = re.match(r"\s*CREATE TABLE (\w+)", body, flags=re.IGNORECASE)
+        if match and match.group(1) != IGNORED_TABLE:
+            found.add(match.group(1))
     return found
 
 
-def _ddl_from_models() -> str:
-    """Render the DDL the models describe.
-
-    Returns:
-        The full script.
-    """
-    buffer = StringIO()
-
-    def write(sql, *args, **kwargs) -> None:
-        buffer.write(f"{sql.compile(dialect=engine.dialect)};")
-
-    engine = create_mock_engine(DIALECT_URL, write)
-    metadata.create_all(engine, checkfirst=False)
-    return buffer.getvalue()
-
-
 def _ddl_from_migrations() -> str:
-    """Render the DDL the migration history produces, in Alembic's offline mode.
+    """Render the whole migration history in Alembic's offline mode.
 
     The URL is injected rather than read from the environment, so the test needs no
     DATABASE_URL and cannot accidentally reach a real database.
@@ -95,15 +79,45 @@ def _ddl_from_migrations() -> str:
     return buffer.getvalue()
 
 
-def test_the_migrations_build_exactly_what_the_models_describe() -> None:
-    """A model without its migration, or a migration that drifted, fails here."""
-    from_models = _statements(_ddl_from_models())
-    from_migrations = _statements(_ddl_from_migrations())
+def test_every_table_of_the_models_is_created_by_a_migration() -> None:
+    """A model added without its revision fails here, with no database in sight."""
+    buffer = StringIO()
+
+    def write(sql, *args, **kwargs) -> None:
+        buffer.write(f"{sql.compile(dialect=engine.dialect)};")
+
+    engine = create_mock_engine(DIALECT_URL, write)
+    metadata.create_all(engine, checkfirst=False)
+
+    from_models = _created_tables(buffer.getvalue())
+    from_migrations = _created_tables(_ddl_from_migrations())
 
     assert from_models, "rendered nothing from the models — the metadata is empty"
-    missing = from_models - from_migrations
-    extra = from_migrations - from_models
-    assert not missing, f"no migration builds: {sorted(missing)}"
-    assert not extra, (
-        f"the migrations build something the models do not describe: {sorted(extra)}"
+    assert not from_models - from_migrations, (
+        f"no migration creates: {sorted(from_models - from_migrations)}"
     )
+    assert not from_migrations - from_models, (
+        f"the migrations create tables no model describes: "
+        f"{sorted(from_migrations - from_models)}"
+    )
+
+
+@pytest.mark.db
+async def test_the_migrated_schema_matches_the_models_exactly(
+    db_engine: AsyncEngine,
+) -> None:
+    """After `upgrade head`, autogenerate must find nothing left to do.
+
+    This is the rigorous half: it compares columns, types and constraints against a
+    schema that was actually built by the migrations, which is the only way to catch a
+    forgotten `ALTER`. The `migrated_database` fixture has already applied the history.
+    """
+
+    def diff(connection: Connection) -> list[tuple]:
+        context = MigrationContext.configure(connection)
+        return compare_metadata(context, metadata)
+
+    async with db_engine.connect() as connection:
+        differences = await connection.run_sync(diff)
+
+    assert differences == [], f"le schéma migré diverge des modèles : {differences}"
