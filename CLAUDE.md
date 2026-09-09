@@ -15,10 +15,14 @@ Discord n'expose les deux intents privilégiés que sur ses drapeaux `_limited`,
 le contrôle devait absolument accepter — et une page de cent messages a été lue et
 convertie en records, contenu compris.
 
-**Ce qui reste dû, et que rien ne remplace : la migration n'a jamais été appliquée à un
-vrai Postgres**, et les 35 tests marqués `db` sont écrits et sautés. `just db && just
-check` sur une machine avec Docker est ce qui les lève. Tant que ce n'est pas fait,
-considérez la couche SQL comme non exécutée.
+La couche SQL est exécutée depuis le 2026-09-09 : les deux migrations s'appliquent et
+**les 130 tests passent**, tests marqués `db` compris, contre un PostgreSQL 16.2 réel.
+Deux passes consécutives laissent toutes les tables à zéro ligne.
+
+Deux réserves subsistent, mineures mais réelles : la vérification s'est faite sur
+**Postgres 16**, alors que les composes déclarent 18 — la CI, elle, tourne bien sur 18 ;
+et rien de tout cela ne teste le déploiement lui-même (images, entrypoint de migration,
+healthchecks), qui n'a jamais été construit.
 
 **Lire `docs/superpowers/specs/2026-09-08-bot-discord-socle-design.md` avant de toucher
 au code.** Le document porte le découpage complet, les décisions déjà prises et leurs
@@ -221,6 +225,14 @@ migrations elles-mêmes. Le raisonnement complet est en section 4 de la spec du 
   retentez pas de comparer du DDL rendu pour couvrir le second cas hors base : dès qu'une
   migration fait un `ALTER TABLE`, les deux textes ne peuvent plus coïncider — c'est
   précisément comme ça que la première version de ce test a été démentie.
+- **Demandez `db_sessions` et non `db_engine`** dès que le code testé a besoin d'une
+  *fabrique* de sessions — `catch_up_channel` et `run_nightly` en ouvrent une par page
+  et par jour. Fabriquer la vôtre sur `db_engine` contourne le rollback et committe pour
+  de vrai : c'est ce qui a fait échouer 19 tests à la première exécution contre un vrai
+  Postgres, tous en lisant les lignes d'un autre test. `db_session` se déduit de
+  `db_sessions`, le trick de transaction ne vivant qu'à un seul endroit.
+- `migrated_database` tronque toutes les tables une fois par session : « la suite part
+  d'une base vide » doit être vrai, pas espéré.
 - `tests/factories.py` construit les records ; ne redéclarez pas un `an_event` local.
 
 `tests/conftest.py` applique automatiquement le marqueur `anyio` à toute fonction de test

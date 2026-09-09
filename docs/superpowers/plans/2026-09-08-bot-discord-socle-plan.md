@@ -4,11 +4,14 @@
 - **État** : **les huit étapes sont écrites** (branche `feature/core-schema`). Chaque
   étape porte son bilan : les écarts au plan, ce que l'écriture a appris, et ce qui n'a
   pas pu être vérifié.
-- **Ce qui reste dû, et que rien ne remplace** : aucune connexion gateway n'a été
-  ouverte (il faut un `DISCORD_TOKEN` et un serveur de test), et la migration n'a jamais
-  été appliquée à un vrai Postgres — les 32 tests marqués `db` sont écrits et sautés.
-  `just db && just check` sur une machine avec Docker lève les deux, et la CI le fera au
-  premier push.
+- **Vérifié le 2026-09-09** : la connexion gateway est établie sous Python 3.14 sur un
+  vrai serveur, et les deux migrations plus les 130 tests — tous les `db` compris —
+  passent contre un PostgreSQL 16.2 réel, deux passes de suite, en laissant toutes les
+  tables à zéro ligne. Les deux angles morts du socle sont levés.
+- **Ce qui reste non vérifié** : le déploiement lui-même. Aucune image n'a été
+  construite, l'entrypoint de migration n'a jamais tourné, aucun healthcheck n'a été
+  évalué. Et la vérification SQL s'est faite sur Postgres 16, là où les composes et la
+  CI déclarent 18.
 - **Spec** : `docs/superpowers/specs/2026-09-08-bot-discord-socle-design.md`. Ce plan ne
   rejuge aucune de ses décisions ; il les ordonne. Toute question de « pourquoi » se
   répond là-bas.
@@ -140,8 +143,18 @@ avoir écrit avant d'en dépendre.
   checkout du projet posé à côté, et ses modules entraient en collision de basename
   avec les vrais. La collecte méritait d'être bornée de toute façon.
 
-La vérification qui reste due : aucune base n'était joignable dans l'environnement où
-l'étape a été écrite. Les deux tests solidaires du harnais sont **sautés, pas verts**.
+**Le harnais avait un trou, trouvé le 2026-09-09 à la première exécution réelle.** Il ne
+protégeait qu'un chemin sur deux : `db_session` greffait bien sa session sur une
+transaction annulée, mais `catch_up_channel` et `run_nightly` prennent une **fabrique**
+de sessions — une par page, une par jour — et ces tests la construisaient sur
+`db_engine`, ce qui contourne le rollback et committe pour de vrai. Dix-neuf tests sur
+130 ont échoué, tous en lisant les lignes d'un autre test, tandis que les deux tests
+solidaires passaient au vert : ils ne gardaient que le chemin qu'ils connaissaient.
+
+Le trick ne vit plus qu'à un seul endroit — `db_sessions` rend la fabrique, `db_session`
+s'en déduit — et `migrated_database` tronque une fois par session, pour que « la suite
+part d'une base vide » soit vrai plutôt qu'espéré. La leçon vaut au-delà du harnais : un
+test qui garde une propriété ne la garde que sur le chemin qu'il emprunte.
 
 ## Étape 2 — Schéma, première migration, upserts
 
