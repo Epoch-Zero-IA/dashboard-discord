@@ -79,20 +79,32 @@ def message_event(message: discord.Message) -> MessageEvent | None:
 
     Returns:
         The event, or None for a direct message. DMs have no guild, the schema is keyed
-        by one, and a private conversation is not what this project archives.
+        by one, and a private conversation is not what this project archives. Messages
+        posted in a thread do come through, the thread being recorded as a channel.
     """
     guild = message.guild
     if guild is None:
         return None
 
-    channel_name = getattr(message.channel, "name", None)
+    channel = message.channel
+    channel_name = getattr(channel, "name", None)
     author = message.author
     reference = message.reference
+
+    # A thread carries messages like a channel and gets a row of its own, flagged and
+    # pointing at its parent. `Thread.parent_id` is the channel it hangs under; a
+    # TextChannel has no such thing (its `category_id` is a different idea entirely,
+    # and not what we store here).
+    is_thread = isinstance(channel, discord.Thread)
 
     return MessageEvent(
         guild=GuildRecord(id=guild.id, name=guild.name),
         channel=ChannelRecord(
-            id=message.channel.id, guild_id=guild.id, name=channel_name or "unknown"
+            id=channel.id,
+            guild_id=guild.id,
+            name=channel_name or "unknown",
+            parent_id=channel.parent_id if is_thread else None,
+            is_thread=is_thread,
         ),
         author=UserRecord(
             id=author.id,

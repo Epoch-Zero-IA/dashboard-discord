@@ -27,11 +27,19 @@ class GuildRecord:
 
 @dataclass(frozen=True, slots=True)
 class ChannelRecord:
-    """A channel as last seen."""
+    """A channel as last seen — or a thread, which Discord treats as one.
+
+    A thread carries messages exactly like a channel and gets a row of its own, with
+    `is_thread` to tell them apart and `parent_id` to say where it hangs. Folding the
+    two into one table is what keeps every message pointing at a single kind of parent;
+    the alternative was a `thread` table and a polymorphic foreign key on `message`.
+    """
 
     id: int
     guild_id: int
     name: str
+    parent_id: int | None = None
+    is_thread: bool = False
 
 
 @dataclass(frozen=True, slots=True)

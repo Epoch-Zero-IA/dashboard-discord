@@ -30,7 +30,8 @@ class HistorySource:
 
         A channel we cannot read is an empty page rather than an error: the bot may sit
         in a guild with fifty channels and rights on forty of them, and that must not
-        stop the catch-up of the others.
+        stop the catch-up of the others. Anything that is neither a text channel nor a
+        thread — a voice channel, a category, an id we no longer see — is empty too.
 
         Args:
             request: The page to fetch.
@@ -39,7 +40,10 @@ class HistorySource:
             The messages of the page, direct messages and unreadable channels excluded.
         """
         channel = self._client.get_channel(request.channel_id)
-        if not isinstance(channel, discord.TextChannel):
+        # Threads too: they hold messages exactly like a channel and expose the same
+        # `history()`. Accepting only TextChannel silently returned an empty page for
+        # every thread, which the catch-up would then have read as "nothing older".
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return []
 
         before = discord.Object(id=request.before) if request.before else None

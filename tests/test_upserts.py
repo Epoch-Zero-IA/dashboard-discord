@@ -15,7 +15,14 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.models import HEARTBEAT_ID, BotHeartbeat, IngestCursor, Message, Reaction
+from core.models import (
+    HEARTBEAT_ID,
+    BotHeartbeat,
+    Channel,
+    IngestCursor,
+    Message,
+    Reaction,
+)
 from core.records import ReactionRecord
 from core.upserts import (
     apply_message_edit,
@@ -210,3 +217,39 @@ async def test_the_heartbeat_stays_a_single_row(db_session: AsyncSession) -> Non
     assert rows[0].id == HEARTBEAT_ID
     assert rows[0].beat_at == later
     assert rows[0].session_started_at == started
+
+
+@pytest.mark.db
+async def test_a_thread_is_recorded_as_a_channel_that_knows_its_parent(
+    db_session: AsyncSession,
+) -> None:
+    """Threads share the `channel` table, flagged and pointing at their parent.
+
+    Discovered on the first real connection: a good part of the conversation lives in
+    threads, `on_message` makes no distinction, and the catch-up used to skip them —
+    so a thread was ingested live and never backfilled.
+    """
+    await ingest_message(
+        db_session,
+        an_event(message_id=42, channel_id=999, parent_id=CHANNEL_ID, is_thread=True),
+    )
+
+    channel = (
+        await db_session.execute(select(Channel).where(Channel.id == 999))
+    ).scalar_one()
+    assert channel.is_thread is True
+    assert channel.parent_id == CHANNEL_ID
+
+
+@pytest.mark.db
+async def test_an_ordinary_channel_is_not_flagged_as_a_thread(
+    db_session: AsyncSession,
+) -> None:
+    """The default matters: the column is NOT NULL and every existing row predates it."""
+    await ingest_message(db_session, an_event())
+
+    channel = (
+        await db_session.execute(select(Channel).where(Channel.id == CHANNEL_ID))
+    ).scalar_one()
+    assert channel.is_thread is False
+    assert channel.parent_id is None

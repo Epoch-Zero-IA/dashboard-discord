@@ -127,11 +127,7 @@ class Worker(discord.Client):
         work resumes by itself, and a failed catch-up must not cost the live ingestion
         that is already running.
         """
-        channel_ids = [
-            channel.id
-            for channel in self.get_all_channels()
-            if isinstance(channel, discord.TextChannel)
-        ]
+        channel_ids = self._ingestable_channel_ids()
         source = HistorySource(self)
         # No budget in backfill mode: the point of that command is to finish.
         budget = None if self._backfill else STARTUP_PAGE_BUDGET
@@ -152,6 +148,31 @@ class Worker(discord.Client):
             if await self._abort_if_database_gone(exc, "catch_up"):
                 return
             log.exception("catch_up_failed")
+
+    def _ingestable_channel_ids(self) -> list[int]:
+        """List every text channel and active thread the catch-up should walk.
+
+        Threads are included because they hold messages exactly like a channel: leaving
+        them out ingested them live — `on_message` makes no distinction — while never
+        backfilling them, so a conversation moved into a thread was half archived.
+
+        Known limit: only **active** threads. An archived one needs a separate paginated
+        call per channel (`TextChannel.archived_threads()`), and its messages are already
+        in the database if the thread was active while the worker was running. Worth
+        revisiting the day a whole forum channel turns out to be missing.
+
+        Returns:
+            The channel and thread ids, without duplicates.
+        """
+        ids = [
+            channel.id
+            for channel in self.get_all_channels()
+            if isinstance(channel, discord.TextChannel)
+        ]
+        ids += [thread.id for guild in self.guilds for thread in guild.threads]
+        # `guild.threads` can hold a thread whose parent is also listed above; the ids
+        # are distinct, but a duplicate would cost a second useless page.
+        return list(dict.fromkeys(ids))
 
     async def _abort_if_database_gone(self, exc: Exception, source: str) -> bool:
         """Shut the worker down if `exc` means the database is gone.

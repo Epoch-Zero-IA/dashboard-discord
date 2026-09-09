@@ -26,6 +26,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,13 +54,27 @@ class Guild(Base):
 
 
 class Channel(Base):
-    """A text channel of a guild."""
+    """A text channel of a guild, or a thread inside one.
+
+    Threads live here rather than in a table of their own: they carry messages just like
+    a channel, and separating them would make `message.channel_id` point at one of two
+    tables. `is_thread` tells them apart, `parent_id` says which channel a thread hangs
+    under.
+
+    `parent_id` is deliberately **not** a foreign key, for the same reason as
+    `message.reply_to_id`: a thread can be readable while its parent channel is not, and
+    a constraint would reject the thread rather than the one thing we cannot fix.
+    """
 
     __tablename__ = "channel"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     guild_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("guild.id"))
     name: Mapped[str] = mapped_column(String(NAME_LENGTH))
+    parent_id: Mapped[int | None] = mapped_column(BigInteger)
+    is_thread: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -68,12 +68,21 @@ async def upsert_channel(session: AsyncSession, channel: ChannelRecord) -> None:
         channel: The channel as last seen.
     """
     statement = insert(Channel).values(
-        id=channel.id, guild_id=channel.guild_id, name=channel.name
+        id=channel.id,
+        guild_id=channel.guild_id,
+        name=channel.name,
+        parent_id=channel.parent_id,
+        is_thread=channel.is_thread,
     )
     await session.execute(
         statement.on_conflict_do_update(
             index_elements=[Channel.id],
-            set_={"name": statement.excluded.name, "updated_at": func.now()},
+            set_={
+                "name": statement.excluded.name,
+                "parent_id": statement.excluded.parent_id,
+                "is_thread": statement.excluded.is_thread,
+                "updated_at": func.now(),
+            },
         )
     )
 

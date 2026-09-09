@@ -27,6 +27,8 @@ def an_event(
     message_id: int = MESSAGE_ID,
     channel_id: int = CHANNEL_ID,
     created_at: datetime = POSTED_AT,
+    parent_id: int | None = None,
+    is_thread: bool = False,
 ) -> MessageEvent:
     """Build a message event with the dimensions it would have arrived with.
 
@@ -36,13 +38,21 @@ def an_event(
         channel_id: The channel it was posted in.
         created_at: When it was posted. The aggregation tests place messages on
             several different days.
+        parent_id: For a thread, the channel it hangs under.
+        is_thread: Whether the message was posted in a thread rather than a channel.
 
     Returns:
         The event, ready to ingest.
     """
     return MessageEvent(
         guild=GuildRecord(id=GUILD_ID, name="Serveur de test"),
-        channel=ChannelRecord(id=channel_id, guild_id=GUILD_ID, name="general"),
+        channel=ChannelRecord(
+            id=channel_id,
+            guild_id=GUILD_ID,
+            name="general",
+            parent_id=parent_id,
+            is_thread=is_thread,
+        ),
         author=UserRecord(id=AUTHOR_ID, username="alice", display_name="Alice"),
         message=MessageRecord(
             id=message_id,
